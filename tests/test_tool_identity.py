@@ -154,3 +154,92 @@ def test_run_records_identity_and_refuses_resume_after_tool_change(tmp_path, too
     _exe(exes["power"], "echo replaced; exit 0")                 # same path, new tool
     with pytest.raises(E.WorkflowError, match="tool power: sha256 changed"):
         E.Run(run.dir).advance()
+
+
+# --- resume: versions behind wrappers, and the run budget around the probes ---
+
+def _identity_run(tmp_path, toolchain, monkeypatch, setup_body=None):
+    from cedar.workflow import engine as E
+    monkeypatch.setenv("CEDAR_STATE_HOME", str(tmp_path / "state"))
+    for n in ("a.db", "a.lib", "a.v", "rc", "tech.lef", "cells.lef"):
+        (tmp_path / n).write_text("")
+    (tmp_path / "m.v").write_text(RTL)
+    stages = {"synthesis": "synopsys-dc", "place_route": "cadence-innovus", "simulation": "synopsys-vcs",
+              "saif": "synopsys-vcd2saif", "power": "synopsys-primetime", "equivalence": "cadence-conformal"}
+    exes = {k: _exe(tmp_path / f"tool-{k}", "exit 0") for k in stages}
+    target = _exe(tmp_path / "real-power", "echo 'pt_shell version - V-1'")
+    _exe(exes["power"], f'exec "{target}" "$@"')                # a wrapper that never changes
+    tools = {"schema": "cedar/tool-profile@1", "name": "t", "tools": {
+        k: {"adapter": v, "executable": str(exes[k])} for k, v in stages.items()}}
+    if setup_body is not None:
+        (tmp_path / "env.sh").write_text(setup_body)
+        tools["environment"] = {"setup_script": str(tmp_path / "env.sh")}
+    (tmp_path / "tools.yaml").write_text(yaml.safe_dump(tools))
+    (tmp_path / "tech.yaml").write_text(yaml.safe_dump({
+        "schema": "cedar/technology@1", "name": "x", "units": {"time": "ps"}, "default_corner": "tt",
+        "corners": {"tt": {"db": ["a.db"], "liberty": ["a.lib"], "sim_models": ["a.v"], "rc_tech": "rc"}},
+        "lef": {"tech": "tech.lef", "cells": ["cells.lef"]}, "place_route": {"site": "core"}}))
+    (tmp_path / "design.yaml").write_text(yaml.safe_dump({
+        "schema": "cedar/design@1", "name": "m", "top": "m", "rtl": ["m.v"],
+        "profiles": {"tools": "tools.yaml", "technology": "tech.yaml"},
+        "clocks": [{"port": "clk", "period_ns": 1.0}], "activity": {"mode": "testbench", "testbench": "m.v"},
+        "verification": {"mode": "conformal"}, "objective": {"preset": "balanced"},
+        "search": {"preset": "quick", "rules_to_propose": 0}}))
+    sel = str(toolchain.bin_dir.parent) if toolchain.bin_dir.name == "bin" else None
+    run = E.Run.create(str(tmp_path / "design.yaml"), str(tmp_path / "runs"), toolchain_prefix=sel)
+    assert run.advance(stop_after="preflight") == "running"
+    assert run.s["provenance"]["tool_identity"]["tools"]["power"]["version"] == "V-1"
+    return E, run, target
+
+
+def _no_leftovers(E, run):
+    from cedar import proc
+    assert proc.deadline() is None                              # deadline uninstalled on every exit
+    import fcntl
+    with open(run.dir / ".lock", "a") as fh:                    # and the run lock released
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def test_resume_refuses_a_new_release_behind_an_unchanged_wrapper(tmp_path, toolchain, monkeypatch):
+    E, run, target = _identity_run(tmp_path, toolchain, monkeypatch)
+    measured = []
+    monkeypatch.setattr(E.Run, "_measure", lambda self, name, rtl: measured.append(name))
+    _exe(target, "echo 'pt_shell version - V-2'")               # only the wrapper's target changes
+    r = E.Run(run.dir)
+    with pytest.raises(E.WorkflowError, match=r"tool power: version V-1 -> V-2"):
+        r.advance()
+    assert measured == [] and E.Run(run.dir).s["phase"] == "baseline"   # nothing measured
+    assert not (run.dir / "measure").exists()
+    _no_leftovers(E, run)
+
+
+def test_no_probe_starts_after_the_budget_expired(tmp_path, toolchain, monkeypatch):
+    calls = tmp_path / "setup-calls"
+    E, run, _ = _identity_run(tmp_path, toolchain, monkeypatch, setup_body=f'echo x >> "{calls}"\n')
+    before = calls.read_text().count("x")
+    run.s["budget"]["deadline_epoch"] = time.time() - 1
+    run.save()
+    t0 = time.monotonic()
+    assert E.Run(run.dir).advance() == "failed"
+    assert E.Run(run.dir).advance() == "failed"                  # sticky, again without probes
+    assert time.monotonic() - t0 < 2.0
+    assert calls.read_text().count("x") == before               # the setup script never ran again
+    assert E.Run(run.dir).s["expired"]
+    _no_leftovers(E, run)
+
+
+def test_slow_resume_probes_are_capped_by_the_remaining_budget(tmp_path, toolchain, monkeypatch):
+    flag = tmp_path / "slow"
+    E, run, _ = _identity_run(tmp_path, toolchain, monkeypatch,
+                              setup_body=f'[ ! -e "{flag}" ] || sleep 30\ntrue\n')
+    flag.touch()                                                # every setup now takes 30 s
+    run.s["budget"]["deadline_epoch"] = time.time() + 1.0
+    run.save()
+    t0 = time.monotonic()
+    assert E.Run(run.dir).advance() == "failed"
+    assert time.monotonic() - t0 < 10.0                         # not 7 x 30 s (or 7 x 60 s timeouts)
+    r = E.Run(run.dir)
+    assert r.s["expired"]["during"] == "resume checks" and "budget" in r.s["error"]
+    assert r.advance() == "failed"
+    _no_leftovers(E, run)

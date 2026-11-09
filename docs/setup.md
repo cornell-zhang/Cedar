@@ -98,7 +98,9 @@ simulation, saif, power, equivalence):
   It is `stale` once any of these changes, e.g. a tool replaced at the same path,
   a wrapper pointing at a new release, or an edited setup script. Runs record
   the same identity in their provenance at preflight and refuse to resume if a
-  tool's path, content or environment changed.
+  tool's path, content, version or environment changed (so a wrapper that now
+  dispatches to another release stops the run before anything else is
+  measured).
 
 Runs check that every stage required by the measurement mode is available and
 stop otherwise (`missing_capability`); they never downgrade a full-PPA run.

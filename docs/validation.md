@@ -371,6 +371,25 @@ tests fail.
   edited setup script, a changed environment behind an unchanged setup script,
   a hanging version probe and a run resumed after a tool replacement.
 
+## Tenth review: resume checks
+
+* Resume compared tool identity without versions, so an unchanged wrapper that
+  now dispatched to another release was accepted; it now compares the probed
+  versions as well and refuses before anything else is measured.
+* The resume checks ran before the run budget was installed and before
+  expiry handling, so an expired run still started the setup script and one
+  probe per tool (2.33 s in the reviewer's reproduction, up to minutes with
+  slow setup). `advance` now takes the lock, installs the persisted deadline and
+  returns the sticky failure of an expired run before any probe; the checks run
+  under the remaining budget and an expiry during them is recorded as
+  `expired during resume checks` (not as changed inputs); lock and deadline are
+  released on every exit. The reviewer's reproductions: the wrapper change is
+  refused (`tool power: version V-1 -> V-2`); the expired run fails in 0.01 s.
+* Regressions: `Run.advance` after changing only a wrapper's target (refused,
+  nothing measured), no setup-script invocation after expiry (counted), slow
+  (30 s) setup probes with 1 s of budget left (fails within seconds), and the
+  lock/deadline state after each exit.
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.

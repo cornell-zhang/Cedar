@@ -228,10 +228,12 @@ class Run:
         """Run phases until done, failure, or an agent task is pending.
 
         Holds an exclusive lock on the run directory so two processes can never
-        advance the same run concurrently.
+        advance the same run concurrently. The persisted run budget is installed
+        before anything else: an expired run fails (sticky) without starting a
+        single process, and the resume checks (input fingerprints, tool identity
+        probes) run under the remaining budget.
         """
         import fcntl
-        self._check_inputs_unchanged()
         lock = open(self.dir / ".lock", "w")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -242,6 +244,20 @@ class Run:
         try:
             # Every subprocess started while advancing is capped by the budget.
             procmod.set_deadline(self._deadline_epoch())
+            if self.s["phase"] == "done":
+                return self._advance(agent_cmd, agent_label, stop_after)    # finished: nothing to check
+            if self.s.get("expired"):
+                return self._expire(self.s["expired"]["during"])
+            if self.budget_expired():
+                return self._expire(self.s["phase"])
+            try:
+                self._check_inputs_unchanged()
+            except (WorkflowError, procmod.DeadlineExpired):
+                if self.budget_expired():          # probes cut short by the budget: not an input change
+                    return self._expire("resume checks")
+                raise
+            if self.budget_expired():
+                return self._expire("resume checks")
             return self._advance(agent_cmd, agent_label, stop_after)
         finally:
             procmod.set_deadline(None)
@@ -302,11 +318,10 @@ class Run:
                     changed.append(f"{stored.get(path, now_fp.get(path, ['?']))[0]} {path} {what}")
         ident = self.s["provenance"].get("tool_identity")
         if ident:
-            # Same tools as at preflight (path, real path, content, environment);
-            # version probes are recorded at preflight and compared by `cedar doctor`.
+            # Same tools as at preflight: path, real path, content, environment
+            # AND the probed version (a wrapper may dispatch to another release).
             from ..setup import identity_changes, tool_identity
-            changed += [f"tool {c}" for c in identity_changes(ident, tool_identity(self.tools, versions=False),
-                                                                versions=False)]
+            changed += [f"tool {c}" for c in identity_changes(ident, tool_identity(self.tools))]
         cid = cfgmod.constraints_id(self.design, self.tech, self.s["corner"])
         if cid != self.s["constraints_id"]:
             changed.append(f"constraints id {self.s['constraints_id']} -> {cid}")

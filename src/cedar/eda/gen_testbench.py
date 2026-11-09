@@ -19,10 +19,11 @@ from ..egraph import pipeline
 from ..toolchain import Toolchain
 
 
-def ports(tc: Toolchain, rtl: Sequence[str], top: str, work: Path) -> List[Tuple[str, str, int]]:
+def ports(tc: Toolchain, rtl: Sequence[str], top: str, work: Path, include_dirs: Sequence[str] = (),
+          defines=None) -> List[Tuple[str, str, int]]:
     work.mkdir(parents=True, exist_ok=True)
     mlir = work / "ports.mlir"
-    pipeline.frontend(tc, rtl, top, mlir, work, flatten=False)
+    pipeline.frontend(tc, rtl, top, mlir, work, include_dirs, defines, flatten=False)
     m = re.search(rf"hw\.module\s+@{re.escape(top)}\((.*?)\)\s*(?:attributes|\{{)", mlir.read_text(), re.S)
     if not m:
         raise RuntimeError(f"cannot find hw.module @{top}")
@@ -33,8 +34,9 @@ def ports(tc: Toolchain, rtl: Sequence[str], top: str, work: Path) -> List[Tuple
 
 
 def generate_activity_testbench(tc: Toolchain, rtl: Sequence[str], top: str, out: Path, clocks: Sequence[dict],
-                                resets: Sequence[dict], cycles: int = 1000, seed: int = 1) -> Path:
-    ps = ports(tc, rtl, top, out.parent / "tbgen")
+                                resets: Sequence[dict], cycles: int = 1000, seed: int = 1,
+                                include_dirs: Sequence[str] = (), defines=None) -> Path:
+    ps = ports(tc, rtl, top, out.parent / "tbgen", include_dirs, defines)
     clk_ports = {c.get("port") for c in clocks if c.get("port")}
     rst = {r["port"]: r for r in resets}
     decl, conns, drive, init = [], [], [], []

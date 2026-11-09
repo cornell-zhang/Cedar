@@ -103,14 +103,20 @@ class Run:
         rdir = Path(work_dir).expanduser().resolve() / rid
         if (rdir / "run.json").exists():
             raise WorkflowError(f"run {rdir} already exists; use `cedar run continue`")
+        if any(ch.isspace() for ch in str(rdir)):
+            raise WorkflowError(f"work directory {rdir} contains whitespace; EDA scripts need a path without spaces")
         rdir.mkdir(parents=True, exist_ok=False)
         src = rdir / "inputs"
-        src.mkdir()
-        rtl = []
-        for f in dd["rtl"]:
-            dst = src / Path(f["path"]).name
-            shutil.copy(f["path"], dst)
-            rtl.append(str(dst))
+        (src / "rtl").mkdir(parents=True)
+        # Tools read the original files (so relative `include`s keep working);
+        # numbered copies are kept for provenance and every resume re-checks the
+        # originals' hashes.
+        rtl = [str(Path(f["path"]).resolve()) for f in dd["rtl"]]
+        snapshot = []
+        for i, f in enumerate(rtl):
+            dst = src / "rtl" / f"{i:02d}_{Path(f).name}"
+            shutil.copy(f, dst)
+            snapshot.append(str(dst))
         tc = resolve_toolchain(toolchain_prefix, (tools.data.get("toolchain") or {}).get("prefix", {}).get("path")
                                if (tools.data.get("toolchain") or {}).get("prefix") else None)
         state = {
@@ -126,7 +132,8 @@ class Run:
             "toolchain_prefix": toolchain_prefix or os.environ.get("CEDAR_TOOLCHAIN_PREFIX") or "",
             "corner": corner,
             "rtl": rtl,
-            "rtl_sha256": {Path(r).name: _sha_file(r) for r in rtl},
+            "rtl_snapshot": snapshot,
+            "rtl_sha256": {r: _sha_file(r) for r in rtl},
             "top": dd["top"],
             "constraints_id": cfgmod.constraints_id(design, tech, corner),
             "objective": objective.to_dict(),
@@ -213,6 +220,7 @@ class Run:
         advance the same run concurrently.
         """
         import fcntl
+        self._check_inputs_unchanged()
         lock = open(self.dir / ".lock", "w")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -225,6 +233,21 @@ class Run:
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
             lock.close()
+
+    def _check_inputs_unchanged(self) -> None:
+        """Refuse to resume when the configuration or original RTL changed."""
+        changed = []
+        prov = self.s["provenance"]
+        for name, ld in (("design", self.design), ("tools", self.tools), ("technology", self.tech)):
+            if prov.get(name, {}).get("sha256") not in (None, ld.sha256):
+                changed.append(f"{name} spec {ld.path}")
+        for path, sha in (self.s.get("rtl_sha256") or {}).items():
+            p = Path(path) if os.path.isabs(path) else None
+            if p is not None and (not p.is_file() or _sha_file(str(p)) != sha):
+                changed.append(f"RTL {path}")
+        if changed:
+            raise WorkflowError("inputs changed since this run started (" + "; ".join(changed) +
+                                "); measurements would no longer be comparable — start a new run")
 
     def _advance(self, agent_cmd: Optional[str], agent_label: Optional[Dict[str, str]],
                  stop_after: Optional[str]) -> str:
@@ -306,7 +329,8 @@ class Run:
         work = self.dir / "tmp" / ("parse-" + p.stem)
         work.mkdir(parents=True, exist_ok=True)
         try:
-            pipeline.frontend(self.tc, [str(p)], self.s["top"], work / "x.mlir", work, flatten=False)
+            pipeline.frontend(self.tc, [str(p)], self.s["top"], work / "x.mlir", work,
+                              self.ctx.include_dirs, self.ctx.defines, flatten=False)
         except pipeline.PipelineError as exc:
             return f"does not parse/elaborate as top `{self.s['top']}`: {str(exc)[:300]}"
         sig = _module_signature((work / "x.mlir").read_text(), self.s["top"])
@@ -392,7 +416,8 @@ class Run:
         tb = self.dir / "inputs" / "tb_activity_generated.v"
         if not tb.is_file():
             generate_activity_testbench(self.tc, self.s["rtl"], self.s["top"], tb, self.design.data["clocks"],
-                                        self.design.data.get("resets") or [], cycles=a["cycles"], seed=a["seed"])
+                                        self.design.data.get("resets") or [], cycles=a["cycles"], seed=a["seed"],
+                                        include_dirs=self.ctx.include_dirs, defines=self.ctx.defines)
         return {"testbench": str(tb), "tb_top": "Top", "dut_instance": "DUT"}
 
     def _measure(self, name: str, rtl: List[str]) -> dict:
@@ -663,7 +688,7 @@ class Run:
                     rules[nm] = p.read_text()
                     generated.append(nm)
         sigs = certify.signatures_from_template(self.tc.template("circt.egg").read_text())
-        store = certify.CertificateStore(cfgmod.state_home() / "certificates")
+        store = certify.CertificateStore(cfgmod.state_home() / "certificates", sigs)
         widths = self.s["analysis"]["widths"]
         t0 = time.monotonic()
         adm = certify.admit(rules, widths, store, sigs)
@@ -747,6 +772,9 @@ class Run:
         iters = self.s["iterations"]
         if iters and iters[-1].get("stage") not in ("done", "failed"):
             return self._iteration_step(iters[-1])
+        pend = self.task_of("stop_decision", key=f"after-{len(iters)}")
+        if pend is not None and pend.status != "accepted":
+            return AWAIT                                   # never skip a pending stop decision
         successful = sum(1 for x in iters if x.get("verified"))
         if it >= st["max_iterations"]:
             return "next"
@@ -790,8 +818,8 @@ class Run:
                 continue
             if what == "cost":
                 out.add(x.get("cost_config_id"))
-            else:
-                out.add(tuple(sorted(x.get("rules", []))))
+            elif x.get("rules"):
+                out.add(tuple(sorted(x.get("rules", []))))      # the empty combination does not count
         return out
 
     def _iteration_step(self, rec: dict) -> str:
@@ -914,7 +942,12 @@ class Run:
             rec["ppa"] = ppa.summary()
             rec["score"] = score
             rec["score_problems"] = probs
-            self._record_history(rec, score, bscore, ppa)
+            if c.get("extraction_method") == "circt" or rec.get("extraction_method") == "circt":
+                self._attribute(name, rec)
+            if not rec.get("history_recorded"):
+                rec["history_recorded"] = True       # saved before appending: never double-counted
+                self.save()
+                self._record_history(rec, score, bscore, ppa)
             rec["stage"] = "decide"
             self.save()
             return "iterate"
@@ -967,6 +1000,13 @@ class Run:
     def _measure_pending(self) -> None:
         pending = [n for n, c in self.s["candidates"].items()
                    if c.get("verified") and not c.get("measurement") and n != "baseline"]
+        for n in list(pending):
+            if not self._rtl_intact(self.s["candidates"][n]):
+                c = self.s["candidates"][n]
+                c["verified"] = False
+                c["verification"] = {"status": "failed", "detail": "candidate RTL changed after verification"}
+                self.log(f"{n}: RTL changed after verification — excluded")
+                pending.remove(n)
         if not pending:
             return
         self.log(f"measuring {pending} (parallel)")
@@ -978,6 +1018,25 @@ class Run:
                 self.s["candidates"][n]["measurement"] = md
                 self.log(f"{n}: {PPA.from_dict(md['ppa']).summary()}")
         self.save()
+
+    def _rtl_intact(self, c: dict) -> bool:
+        sha = c.get("sha256")
+        return sha is None or (Path(c["rtl"][0]).is_file() and _sha_file(c["rtl"][0]) == sha)
+
+    def _attribute(self, name: str, rec: dict) -> None:
+        """Netlist-to-e-node attribution right after measurement, so the
+        calibration feeds the *next* iteration's node costs."""
+        from ..attribution import attribute_candidate
+        att = self.s.setdefault("attribution", {"per_candidate": {}, "calibration": None})
+        if name in att["per_candidate"]:
+            return
+        try:
+            r = attribute_candidate(Path(rec["eqsat"]["egraph"]), self.dir / "measure" / name, self.s["top"])
+        except Exception as exc:  # noqa: BLE001
+            r = {"status": "error", "detail": f"{type(exc).__name__}: {exc}"}
+        att["per_candidate"][name] = r
+        if r.get("status") == "ok" and r.get("calibration"):
+            att["calibration"] = r["calibration"]
 
     def phase_measure_pending(self) -> str:
         self._measure_pending()
@@ -997,23 +1056,14 @@ class Run:
                                        len(self._distinct("cost")), len(self._distinct("rules")), len(iters))
 
     def phase_attribution(self) -> str:
-        from ..attribution import attribute_candidate
-        out = {}
+        """Attribute any measured extracted candidate not yet attributed."""
         for name, c in self.s["candidates"].items():
             if c.get("origin") != "extracted" or not c.get("measurement") or not c.get("verified"):
                 continue
             rec = next((x for x in self.s["iterations"] if f"iter{x['iteration']:02d}" == name), None)
-            if rec is None or rec.get("extraction_method") != "circt":
-                continue
-            try:
-                out[name] = attribute_candidate(Path(rec["eqsat"]["egraph"]), self.dir / "measure" / name, self.s["top"])
-            except Exception as exc:  # noqa: BLE001
-                out[name] = {"status": "error", "detail": f"{type(exc).__name__}: {exc}"}
-        calib = None
-        for v in out.values():
-            if v.get("status") == "ok" and v.get("calibration"):
-                calib = v["calibration"]
-        self.s["attribution"] = {"per_candidate": out, "calibration": calib}
+            if rec is not None and rec.get("extraction_method") == "circt":
+                self._attribute(name, rec)
+        self.s.setdefault("attribution", {"per_candidate": {}, "calibration": None})
         return "next"
 
     def _task_timing(self) -> list:
@@ -1028,15 +1078,29 @@ class Run:
         contract = self._contract()
         b = self.baseline_ppa()
         cands = []
+        axes = list(fr.axes)
         for name, c in self.s["candidates"].items():
             ppa = PPA.from_dict(c["measurement"]["ppa"]) if c.get("measurement") else None
             score = self.objective.score(ppa, b)[0] if ppa else None
+            intact = self._rtl_intact(c)
+            complete = bool(ppa) and bool((c.get("measurement") or {}).get("complete")) and not ppa.require(axes)
+            feasible = bool(ppa) and self.objective.feasible(ppa)
+            reasons = []
+            if not c.get("verified"):
+                reasons.append(f"verification {c.get('verification', {}).get('status')}")
+            if not intact:
+                reasons.append("RTL changed after verification")
+            if not complete:
+                reasons.append("measurement incomplete" + (f" ({'; '.join(ppa.require(axes))})" if ppa else ""))
+            elif not feasible:
+                reasons.append("timing goal not met")
             cands.append({"name": name, "origin": c["origin"], "verified": c.get("verified"),
                           "verification": c.get("verification", {}).get("status"),
-                          "measured_complete": (c.get("measurement") or {}).get("complete"),
+                          "measured_complete": complete, "timing_feasible": feasible,
                           "ppa": ppa.summary() if ppa else None, "score": score,
+                          "not_accepted_because": reasons,
                           "rtl": [_rel(r, self.dir) for r in c["rtl"]]})
-        accepted = [c for c in cands if c["verified"] and c["measured_complete"]]
+        accepted = [c for c in cands if not c["not_accepted_because"]]
         report = {
             "schema": "cedar/report@1", "run_id": self.s["run_id"], "design": self.design.data["name"],
             "top": self.s["top"], "objective": self.objective.to_dict(),
@@ -1049,7 +1113,7 @@ class Run:
             "frontier": fr.to_dict(),
             "candidates": cands,
             "accepted_candidates": [c["name"] for c in accepted],
-            "excluded_candidates": [c["name"] for c in cands if not c["verified"]],
+            "excluded_candidates": [c["name"] for c in cands if c["not_accepted_because"]],
             "rules": {"generated": self.s["rules"].get("generated"), "admission": self.s["rules"].get("admission")},
             "attribution": {k: {kk: vv for kk, vv in v.items() if kk != "per_enode"}
                             for k, v in (self.s.get("attribution", {}).get("per_candidate") or {}).items()},

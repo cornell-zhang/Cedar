@@ -94,3 +94,20 @@ def test_vector_read_in_action_counts_for_guard(template_sigs):
     assert C.prove_instance("wrong", wrong, 8, template_sigs)[0].status == "REFUTED"
     unguarded = rule.replace("(= 1 (vec-length ?ops))", "")
     assert C.prove_instance("ung", unguarded, 8, template_sigs)[0].status == "UNSUPPORTED"
+
+
+def test_review_counterexamples_rejected(template_sigs):
+    # rewrite forms cannot length-guard a matched operand vector
+    rw = "(rewrite (comb_add ?a ?ops ?t) (comb_add (vec-get ?ops 0) (vec-push (vec-empty) ?a) ?t))"
+    for w in (1, 8):
+        assert C.prove_instance("rw", rw, w, template_sigs)[0].status == "UNSUPPORTED"
+    # operand width fixed only through the union / RHS, attribute type counted as data
+    ex = '(rewrite (comb_extract ?x (NamedAttr "lowBit" (IntegerAttr 0 (I32))) ?t) ?x)'
+    ex1 = '(rewrite (comb_extract ?x (NamedAttr "lowBit" (IntegerAttr 0 (I32))) (I1)) ?x)'
+    for rule in (ex, ex1):
+        for w in (1, 8, 32):
+            assert C.prove_instance("ex", rule, w, template_sigs)[0].status != "PROVED"
+    ne = """(rule ((= ?l (comb_icmp ?a ?b (NamedAttr "predicate" (IntegerAttr 1 (I64))) ?t)))
+                 ((union ?l (comb_xor ?a (vec-push (vec-empty) ?b) ?t))) :ruleset rules)"""
+    assert C.prove_instance("ne", ne, 1, template_sigs)[0].status != "PROVED"
+    assert C.type_variables(ex1, template_sigs)[1] == [1]          # attribute I32 is not a data width

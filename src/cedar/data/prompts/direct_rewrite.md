@@ -22,6 +22,8 @@ equivalent RTL rewrite(s) of the design below that improve the stated objective.
 - Synthesizable Verilog-2001/SystemVerilog only; no vendor primitives, no `initial` blocks in RTL.
 
 ## Outputs (write exactly these files)
+Each Verilog file must be self-contained: it replaces *all* original RTL files, so
+include every module the top needs.
 {output_list}
 - `{notes_path}`: JSON object `{{"variants": [{{"file": "<file name>", "change": "<one sentence>", "expected_effect": "<area/delay/power reasoning>"}}]}}`
 

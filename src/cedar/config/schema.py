@@ -43,6 +43,7 @@ class F:
     fields: Optional[Dict[str, "F"]] = None    # for obj
     item: Optional["F"] = None                 # for list / map values
     must_exist: bool = True                    # for path
+    pattern: Optional[str] = None              # regex for str
     glob: bool = False                         # path may be a glob pattern
 
 
@@ -118,6 +119,8 @@ def _check_value(f: F, v: Any, base: Path, here: str):
     if k == "str":
         if not isinstance(v, str):
             return v, [f"{here}: expected a string"]
+        if f.pattern and not re.fullmatch(f.pattern, v):
+            return v, [f"{here}: {v!r} does not match {f.pattern}"]
         return v, errs
     if k == "bool":
         if not isinstance(v, bool):

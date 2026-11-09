@@ -350,7 +350,7 @@ def cmd_rules(a) -> int:
     except ToolchainError:
         tmpl = None
     sigs = certify.signatures_from_template(tmpl)
-    store = certify.CertificateStore(cfgmod.state_home() / "certificates") if not a.no_cache else None
+    store = certify.CertificateStore(cfgmod.state_home() / "certificates", sigs) if not a.no_cache else None
     rules = {Path(f).stem: Path(f).read_text() for f in a.files}
     widths = [int(w) for w in a.widths.split(",")]
     adm = certify.admit(rules, widths, store, sigs, a.timeout_ms, a.max_width)

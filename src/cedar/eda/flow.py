@@ -124,6 +124,11 @@ class FlowContext:
         return path
 
 
+def _lib_or_default(ctx: "FlowContext", value: Optional[float], default_ns: float) -> float:
+    """Explicit value (library time unit) or a default given in ns, converted."""
+    return float(value) if value is not None else ctx.to_lib_time(default_ns)
+
+
 # ---------------------------------------------------------------- parsers
 
 def parse_dc_area(rpt: Path) -> Optional[float]:
@@ -201,37 +206,37 @@ def synthesize(ctx: FlowContext, rtl: Sequence[str], work: Path, timeout: Option
         f"if {{![elaborate {ctx.top}]}} {{ puts \"CEDAR_ERROR elaborate failed\"; exit 2 }}",
         f"current_design {ctx.top}",
         "if {![link]} { puts \"CEDAR_ERROR link failed\"; exit 2 }",
-        f"source {sdc}",
+        f"source {{{sdc}}}",
         f"set_max_fanout {syn.get('max_fanout', 16)} [current_design]",
-        f"set_max_transition {syn.get('max_transition', 50.0)} [all_outputs]",
-        f"set_input_transition -max {syn.get('input_transition_max', 60.0)} [all_inputs]",
-        f"set_input_transition -min {syn.get('input_transition_min', 20.0)} [all_inputs]",
+        f"set_max_transition {_lib_or_default(ctx, syn.get('max_transition'), 0.050):.6g} [all_outputs]",
+        f"set_input_transition -max {_lib_or_default(ctx, syn.get('input_transition_max'), 0.060):.6g} [all_inputs]",
+        f"set_input_transition -min {_lib_or_default(ctx, syn.get('input_transition_min'), 0.020):.6g} [all_inputs]",
     ]
     for cell in syn.get("dont_use") or []:
         lines.append(f"set_dont_use [get_lib_cells {cell}]")
     if ctx.hook("synthesis", "pre_compile_hook"):
-        lines.append(f"source {ctx.hook('synthesis', 'pre_compile_hook')}")
+        lines.append(f"source {{{ctx.hook('synthesis', 'pre_compile_hook')}}}")
     lines += [
         "set_fix_multiple_port_nets -all -buffer_constants -feedthroughs [all_designs]",
         "check_design -summary",
         syn.get("compile_command") or "compile -map_effort high -area_effort high -no_design_rule -power_effort high",
     ]
     if ctx.hook("synthesis", "post_compile_hook"):
-        lines.append(f"source {ctx.hook('synthesis', 'post_compile_hook')}")
+        lines.append(f"source {{{ctx.hook('synthesis', 'post_compile_hook')}}}")
     lines += [
         "ungroup -all -flatten",
         "set unmapped [sizeof_collection [get_cells -hier -filter \"is_unmapped == true\" -quiet]]",
         "if {$unmapped > 0} { puts \"CEDAR_ERROR $unmapped unmapped cells after compile\"; exit 3 }",
         "change_names -rules verilog -hierarchy",
-        f"write -format verilog -hierarchy -output {res}/netlist.v",
-        f"write_sdc -nosplit {res}/mapped.sdc",
-        f"report_cross_probing -nosplit [get_cells -hierarchical] > {res}/cross_probing.rpt",
-        f"report_qor > {res}/qor.rpt",
-        f"report_timing -nosplit -max_paths 1 > {res}/timing.rpt",
-        f"report_timing -nosplit -path full -max_paths 1 -nets > {res}/critical_path.rpt",
-        f"report_area -nosplit > {res}/area.rpt",
-        f"report_power -nosplit > {res}/power.rpt",
-        f"report_reference -nosplit > {res}/ref.rpt",
+        f"write -format verilog -hierarchy -output {{{res}/netlist.v}}",
+        f"write_sdc -nosplit {{{res}/mapped.sdc}}",
+        f"report_cross_probing -nosplit [get_cells -hierarchical] > {{{res}/cross_probing.rpt}}",
+        f"report_qor > {{{res}/qor.rpt}}",
+        f"report_timing -nosplit -max_paths 1 > {{{res}/timing.rpt}}",
+        f"report_timing -nosplit -path full -max_paths 1 -nets > {{{res}/critical_path.rpt}}",
+        f"report_area -nosplit > {{{res}/area.rpt}}",
+        f"report_power -nosplit > {{{res}/power.rpt}}",
+        f"report_reference -nosplit > {{{res}/ref.rpt}}",
         "puts CEDAR_DC_DONE",
         "exit 0",
     ]
@@ -293,7 +298,7 @@ def place_route(ctx: FlowContext, netlist: str, sdc: str, work: Path, timeout: O
         "init_design",
     ]
     if ctx.hook("place_route", "post_init_hook"):
-        lines.append(f"source {ctx.hook('place_route', 'post_init_hook')}")
+        lines.append(f"source {{{ctx.hook('place_route', 'post_init_hook')}}}")
     pw, gn = pr.get("power_net", "VDD"), pr.get("ground_net", "VSS")
     lo, hi = (pr.get("power_rail_layer_range") or ["M1", "M3"])[:2]
     lines += [
@@ -309,7 +314,7 @@ def place_route(ctx: FlowContext, netlist: str, sdc: str, work: Path, timeout: O
         f"-routeBottomRoutingLayer {pr.get('route_bottom_layer', 2)} -routeWithViaInPin true",
     ]
     if ctx.hook("place_route", "pre_route_hook"):
-        lines.append(f"source {ctx.hook('place_route', 'pre_route_hook')}")
+        lines.append(f"source {{{ctx.hook('place_route', 'pre_route_hook')}}}")
     lines.append("routeDesign")
     if pr.get("filler_cells"):
         lines.append(f"addFiller -cell {{{' '.join(pr['filler_cells'])}}} -prefix FILLER_")
@@ -371,12 +376,14 @@ def _shell(ctx: FlowContext, work: Path, cmd: str, log: Path, timeout: Optional[
     """Run a non-tool shell command (e.g. ./simv) inside the profile environment."""
     import subprocess
     import time
-    script = ctx.tools.prefix(ctx.tools.tools.get(stage_tool, {}).get("env_required") or []) + f"\nexec nice -n {ctx.tools.nice} {cmd}"
+    tool = ctx.tools.tools.get(stage_tool, {})
+    script = ctx.tools.prefix(tool.get("env_required") or []) + f"\nexec nice -n {ctx.tools.nice} {cmd}"
     t0 = time.monotonic()
     with open(log, "w") as fh:
         try:
             p = subprocess.run(["bash", "-c", script], cwd=str(work), stdout=fh, stderr=subprocess.STDOUT,
-                               stdin=subprocess.DEVNULL, timeout=timeout or 1800, start_new_session=True)
+                               stdin=subprocess.DEVNULL, timeout=timeout or tool.get("timeout_s") or 1800,
+                               start_new_session=True)
         except subprocess.TimeoutExpired:
             return StageResult(label, "timeout", round(time.monotonic() - t0, 2), str(log))
     return StageResult(label, "ok" if p.returncode == 0 else "failed", round(time.monotonic() - t0, 2), str(log),
@@ -432,10 +439,16 @@ def conformal_lec(ctx: FlowContext, golden: Sequence[str], revised: Sequence[str
     fmt_g = "-systemverilog" if detect_hdl(golden) == "sverilog" else "-verilog"
     fmt_r = "-systemverilog" if detect_hdl(revised) == "sverilog" else "-verilog"
     tech_extra = (ctx.tech.data.get("equivalence") or {}).get("extra_commands") or []
+    # Verilog command files carry the design's include dirs and defines so the
+    # checked configuration is exactly the synthesized one.
+    common = [f"+incdir+{d}" for d in ctx.include_dirs]
+    common += [f"+define+{k}={v}" if v not in (None, "") else f"+define+{k}" for k, v in ctx.defines.items()]
+    (work / "golden.f").write_text("\n".join(common + list(golden)) + "\n")
+    (work / "revised.f").write_text("\n".join(common + list(revised)) + "\n")
     lines = [
         "set log file lec.log -replace",
-        f"read design {' '.join(golden)} -golden {fmt_g}",
-        f"read design {' '.join(revised)} -revised {fmt_r}",
+        f"read design -file golden.f -golden {fmt_g}",
+        f"read design -file revised.f -revised {fmt_r}",
         f"set root module {ctx.top} -golden",
         f"set root module {ctx.top} -revised",
         *tech_extra, *extra,
@@ -485,14 +498,23 @@ def rtl_sim_check(ctx: FlowContext, design: Sequence[str], testbench: str, pass_
                   work: Path, timeout: Optional[int] = None) -> Dict[str, object]:
     """Self-checking RTL simulation (explicitly selected verification mode)."""
     work.mkdir(parents=True, exist_ok=True)
+    extra = [f"+incdir+{d}" for d in ctx.include_dirs]
+    extra += [f"+define+{k}={v}" if v not in (None, "") else f"+define+{k}" for k, v in ctx.defines.items()]
     r = ctx.tools.run("simulation", ["-full64", "-sverilog", "+v2k", "-timescale=1ns/1ps", "-o", "simv_chk",
-                                     *design, testbench], work, work / "vcs_check_compile.log", timeout,
+                                     *extra, *design, testbench], work, work / "vcs_check_compile.log", timeout,
                       label="sim_check_compile")
     if r.status == "unavailable":
         return {"status": "unavailable", "detail": r.detail}
+    if r.status == "timeout":
+        return {"status": "error", "detail": "simulation compile timed out"}
     if not r.ok:
+        log = Path(r.log).read_text(errors="replace") if r.log and Path(r.log).is_file() else ""
+        if re.search(r"licen[sc]e", log, re.I) and re.search(r"error|fail|unable|could not", log, re.I):
+            return {"status": "error", "detail": "simulator license problem (not a candidate failure)"}
         return {"status": "failed", "detail": "candidate failed to compile with checking testbench"}
     r2 = _shell(ctx, work, "./simv_chk -l sim_check.log", work / "vcs_check_run.log", timeout, "sim_check", "simulation")
+    if r2.status == "timeout":
+        return {"status": "error", "detail": "checking simulation timed out"}
     txt = (work / "sim_check.log").read_text(errors="replace") if (work / "sim_check.log").is_file() else ""
     if fail_marker in txt:
         return {"status": "failed", "detail": f"testbench reported {fail_marker}"}

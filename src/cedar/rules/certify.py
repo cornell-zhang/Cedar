@@ -87,6 +87,30 @@ def _walk(expr, fn):
             _walk(c, fn)
 
 
+_ATTR_HEADS = ("IntegerAttr", "NamedAttr", "ValueAttr", "ArrayAttr", "TypeAttr")
+
+
+def data_widths(expr) -> List[int]:
+    """Bit widths of *data* types in an s-expression (attribute types excluded)."""
+    out: List[int] = []
+
+    def rec(e):
+        if isinstance(e, list) and e:
+            head = e[0]
+            if isinstance(head, str) and head in _ATTR_HEADS:
+                return
+            if isinstance(head, str) and len(e) == 1 and re.fullmatch(r"I(\d+)", head):
+                out.append(int(head[1:]))
+                return
+            if head == "Int" and len(e) == 2 and isinstance(e[1], int):
+                out.append(e[1])
+                return
+            for c in e:
+                rec(c)
+    rec(expr)
+    return sorted(set(out))
+
+
 def type_variables(rule_text: str, sigs: Dict[str, List[str]]) -> Tuple[List[str], List[int]]:
     """Return (type variables, concrete widths) mentioned in type positions."""
     forms = zv.parse_top_forms(zv._strip_line_comments(rule_text))
@@ -104,8 +128,8 @@ def type_variables(rule_text: str, sigs: Dict[str, List[str]]) -> Tuple[List[str
                             tvars.append(arg)
     for f in forms:
         _walk(f, visit)
-    zv._walk_collect_widths(forms, widths)
-    return tvars, sorted(set(widths))
+    widths = data_widths(forms)
+    return tvars, widths
 
 
 def specialize(rule_text: str, width: int, sigs: Dict[str, List[str]]) -> Tuple[Optional[str], str]:
@@ -169,13 +193,16 @@ class Admission:
 
 
 class CertificateStore:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, sigs: Optional[Dict[str, List[str]]] = None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._vh = verifier_hash()
+        # Specialization depends on the template's operator signatures, so they
+        # are part of the cache identity together with the verifier code.
+        self._sig = hashlib.sha256(json.dumps(sigs or {}, sort_keys=True).encode()).hexdigest()[:8]
 
     def _path(self, sha: str, width: int) -> Path:
-        return self.root / f"{sha[:24]}-w{width}-{self._vh}.json"
+        return self.root / f"{sha[:24]}-w{width}-{self._vh}-{self._sig}.json"
 
     def get(self, sha: str, width: int) -> Optional[Certificate]:
         p = self._path(sha, width)
@@ -230,15 +257,17 @@ def prove_instance(rule_name: str, rule_text: str, width: int, sigs: Dict[str, L
         parsed, err = zv.parse_rule_file(f)
     if parsed is None:
         return cert("UNSUPPORTED", f"verifier cannot model rule shape: {err}", inst)
-    # The specialized instance must only mention `width` (and 1-bit selects).
-    widths = set(parsed.annotated_widths) - {1}
-    if width != 1 and widths and widths != {width}:
-        return cert("UNSUPPORTED", f"instance mentions widths {sorted(widths)} besides {width}", inst)
+    # The specialized instance may only mention data types of `width` and the
+    # 1-bit boolean type; every other operand width must be fixed by the match
+    # pattern (checked below).
+    others = set(data_widths(zv.parse_top_forms(zv._strip_line_comments(inst)))) - {width, 1}
+    if others:
+        return cert("UNSUPPORTED", f"instance mentions data widths {sorted(others)} besides {width}", inst)
     arity = _unguarded_vectors(inst, sigs)
     if arity:
         return cert("UNSUPPORTED", "variadic operand vector(s) without an exact (= N (vec-length ?v)) "
                     f"guard matching the indices used: {arity}", inst)
-    unguarded = _unguarded_operands(parsed, sigs)
+    unguarded = _unguarded_operands(parsed, sigs, inst)
     if unguarded:
         return cert("UNSUPPORTED", f"operand width not fixed by the instance types: {unguarded}", inst)
     try:
@@ -257,21 +286,46 @@ def _syms(expr, out: set) -> None:
             _syms(c, out)
 
 
-def _unguarded_operands(parsed, sigs: Dict[str, List[str]]) -> List[str]:
-    """Bit-vector variables whose width the verifier would have to *default*.
+def _rule_form(rule_text: str):
+    forms = zv.parse_top_forms(zv._strip_line_comments(rule_text))
+    return next((f for f in forms if isinstance(f, list) and f and f[0] in ("rule", "rewrite")), None)
+
+
+def _unguarded_operands(parsed, sigs: Dict[str, List[str]], rule_text: str) -> List[str]:
+    """Bit-vector variables whose width is not fixed by the *match pattern*.
 
     A proof at width ``w`` only covers matches whose operands all have the
-    widths the proof used; if an operand width is not determined by the
-    instance's concrete types, the proof does not cover every possible match.
+    widths the proof used. Widths must therefore be determined by the premises
+    alone; a width implied only by the right-hand side (for example by the
+    ``union`` with the matched node) does not constrain what egglog matches.
     """
-    env = zv.infer_types(parsed)
-    exprs = [e for _, e in parsed.premises] + [parsed.rhs_expr]
+    form = _rule_form(rule_text)
+    if form is None:
+        return ["<unparsed rule>"]
+    if form[0] == "rewrite":
+        prem_pairs = [("?lhs", form[1])]
+        lhs_var = "?lhs"
+    else:
+        prem_pairs = [(p[1], p[2]) for p in form[1]
+                      if isinstance(p, list) and len(p) == 3 and p[0] == "=" and isinstance(p[1], str)
+                      and p[1].startswith("?") and not zv._is_vec_shape(p[2])]
+        lhs_var = parsed.lhs_var
+    prem_rule = zv.ParsedRule(name="premises", description="", leading_comment="", body_text="",
+                              premises=prem_pairs, lhs_var=lhs_var, rhs_expr=lhs_var, annotated_widths=[])
+    env = zv.infer_types(prem_rule)
+    full_env = zv.infer_types(parsed)
+    let_names: set = set()
+    if form[0] == "rule" and len(form) > 2 and isinstance(form[2], list):
+        for act in form[2]:
+            if isinstance(act, list) and len(act) == 3 and act[0] == "let" and isinstance(act[1], str):
+                let_names.add(act[1] if act[1].startswith("?") else "?" + act[1])
     all_syms: set = set()
     for v, e in parsed.premises:
         all_syms.add(v)
         _syms(e, all_syms)
     _syms(parsed.rhs_expr, all_syms)
-    non_bv: set = set(env.vec_elem_width) | set(env.vec_max_index) | set(env.type_var_width)
+    non_bv: set = (set(env.vec_elem_width) | set(env.vec_max_index) | set(env.type_var_width)
+                   | set(full_env.vec_elem_width) | set(full_env.vec_max_index) | set(full_env.type_var_width))
 
     def visit(e):
         if isinstance(e, list) and e and isinstance(e[0], str):
@@ -283,10 +337,14 @@ def _unguarded_operands(parsed, sigs: Dict[str, List[str]]) -> List[str]:
             if e[0] in ("vec-get", "vec-length", "vec-push", "vec-of"):
                 if len(e) > 1:
                     _syms(e[1], non_bv)
-    for e in exprs:
+    for e in [x for _, x in parsed.premises] + [parsed.rhs_expr] + [x for _, x in prem_pairs]:
         _walk(e, visit)
-    # vec-get results are BV values; they are bound through the vec element width.
-    return sorted(s for s in all_syms - non_bv if s not in env.widths and not _bound_by_vec_get(s, parsed, env))
+    bad = []
+    for sym in sorted(all_syms - non_bv - let_names):
+        if sym in env.widths or _bound_by_vec_get(sym, prem_rule, env):
+            continue
+        bad.append(sym)
+    return bad
 
 
 def _unguarded_vectors(rule_text: str, sigs: Dict[str, List[str]]) -> List[str]:
@@ -299,7 +357,22 @@ def _unguarded_vectors(rule_text: str, sigs: Dict[str, List[str]]) -> List[str]:
     """
     forms = zv.parse_top_forms(zv._strip_line_comments(rule_text))
     rule = next((f for f in forms if isinstance(f, list) and f and f[0] in ("rule", "rewrite")), None)
-    if rule is None or rule[0] != "rule" or len(rule) < 3 or not isinstance(rule[1], list):
+    if rule is None:
+        return []
+    if rule[0] == "rewrite":
+        # A rewrite has no premises, so a matched operand vector can never be
+        # length-guarded: reject every OpVec pattern variable.
+        found: set = set()
+
+        def vis(e):
+            if isinstance(e, list) and e and isinstance(e[0], str) and e[0] in sigs:
+                for i, kind in enumerate(sigs[e[0]]):
+                    if kind == "OpVec" and i + 1 < len(e) and isinstance(e[i + 1], str) and e[i + 1].startswith("?"):
+                        found.add(e[i + 1])
+        _walk(rule[1] if len(rule) > 1 else [], vis)
+        return [f"{v} (a rewrite cannot guard vector length; use a rule with (= N (vec-length {v})))"
+                for v in sorted(found)]
+    if rule[0] != "rule" or len(rule) < 3 or not isinstance(rule[1], list):
         return []
     premises = rule[1]
     vecs: set = set()

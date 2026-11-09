@@ -33,7 +33,9 @@ class Measurement:
 
     @property
     def complete(self) -> bool:
-        return all(s.ok for s in self.stages) and not self.pruned
+        """All stages succeeded and every metric required by the mode is valid."""
+        need = ["area", "delay"] + ([] if self.ppa.measurement_mode == "synthesis-only" else ["power"])
+        return all(s.ok for s in self.stages) and not self.pruned and not self.ppa.require(need)
 
     def to_dict(self) -> dict:
         return {"ppa": self.ppa.to_dict(), "stages": [s.to_dict() for s in self.stages],

@@ -11,6 +11,7 @@ combined output captured to a log file. Results are structured
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -64,12 +65,15 @@ class ToolEnv:
     def prefix(self, extra_required: Sequence[str] = ()) -> str:
         lines = ["set -o pipefail"]
         if self.setup_script:
+            msg = shlex.quote(f"CEDAR: setup script failed: {self.setup_script}")
             lines.append(f"source {shlex.quote(self.setup_script)} >/dev/null 2>&1 || "
-                         f"{{ echo 'CEDAR: setup script failed: {self.setup_script}' >&2; exit 97; }}")
+                         f"{{ echo {msg} >&2; exit 97; }}")
         for p in self.path_prepend:
             lines.append(f"export PATH={shlex.quote(p)}:\"$PATH\"")
         req = list(dict.fromkeys(list(self.env_required) + list(extra_required)))
         for v in req:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v):
+                raise ValueError(f"invalid environment variable name {v!r}")
             lines.append(f"[ -n \"${{{v}:-}}\" ] || {{ echo 'CEDAR: required environment variable {v} is not set' >&2; exit 98; }}")
         return "\n".join(lines)
 

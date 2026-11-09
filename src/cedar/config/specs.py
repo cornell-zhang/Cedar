@@ -30,7 +30,8 @@ def _tool(stage: str, doc: str) -> F:
         "executable": F("str", required=True, doc="command name or absolute path"),
         "args": F("list", item=F("str"), default=[], doc="extra fixed arguments"),
         "timeout_s": F("int", min=1, default=3600, unit="s", doc="per-invocation timeout"),
-        "env_required": F("list", item=F("str"), default=[], doc="environment variable NAMES that must be set (values are never recorded)"),
+        "env_required": F("list", item=F("str", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), default=[],
+                          doc="environment variable NAMES that must be set (values are never recorded)"),
     })
 
 
@@ -40,7 +41,8 @@ TOOL_PROFILE = {
     "description": F("str", default=""),
     "environment": F("obj", doc="how to prepare the shell for EDA tools", fields={
         "setup_script": F("path", doc="bash file sourced before every tool invocation (site modules, licenses)"),
-        "env_required": F("list", item=F("str"), default=[], doc="variable names required for all tools"),
+        "env_required": F("list", item=F("str", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$"), default=[],
+                          doc="variable names required for all tools"),
         "path_prepend": F("list", item=F("path"), default=[], doc="directories prepended to PATH"),
     }),
     "execution": F("obj", fields={
@@ -87,9 +89,9 @@ TECHNOLOGY = {
     "synthesis": F("obj", fields={
         "compile_command": F("str", default="compile -map_effort high -area_effort high -no_design_rule -power_effort high"),
         "max_fanout": F("int", min=1, default=16),
-        "max_transition": F("float", min=0, default=50.0, unit="library time unit"),
-        "input_transition_max": F("float", min=0, default=60.0, unit="library time unit"),
-        "input_transition_min": F("float", min=0, default=20.0, unit="library time unit"),
+        "max_transition": F("float", min=0, unit="library time unit", doc="default 0.050 ns, converted"),
+        "input_transition_max": F("float", min=0, unit="library time unit", doc="default 0.060 ns, converted"),
+        "input_transition_min": F("float", min=0, unit="library time unit", doc="default 0.020 ns, converted"),
         "dont_use": F("list", item=F("str"), default=[]),
         "pre_compile_hook": F("path", doc="Tcl sourced before compile"),
         "post_compile_hook": F("path", doc="Tcl sourced after compile"),

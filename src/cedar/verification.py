@@ -75,20 +75,22 @@ def check(mode: str, golden: Sequence[str], candidate: Sequence[str], top: str, 
         if mode == "circt-lec":
             if toolchain is None or not toolchain.has("circt-lec"):
                 return CheckResult("unavailable", mode, "circt-lec not in the selected toolchain", 0.0)
-            return _circt_lec(toolchain, golden, candidate, top, work, t0)
+            return _circt_lec(toolchain, golden, candidate, top, work, t0, ctx)
         return CheckResult("error", mode, f"unknown verification mode {mode!r}", 0.0)
     except Exception as exc:  # noqa: BLE001 - any crash is an error, never a pass
         return CheckResult("error", mode, f"{type(exc).__name__}: {exc}", round(time.monotonic() - t0, 2))
 
 
 def _circt_lec(tc: Toolchain, golden: Sequence[str], candidate: Sequence[str], top: str, work: Path,
-               t0: float) -> CheckResult:
+               t0: float, ctx: Optional[flow.FlowContext] = None) -> CheckResult:
     import z3
 
     g = work / "golden.mlir"
     c = work / "candidate.mlir"
-    pipeline.frontend(tc, golden, top, g, work)
-    pipeline.frontend(tc, candidate, top, c, work)
+    inc = ctx.include_dirs if ctx else ()
+    dfn = ctx.defines if ctx else None
+    pipeline.frontend(tc, golden, top, g, work, inc, dfn)
+    pipeline.frontend(tc, candidate, top, c, work, inc, dfn)
     for f in (g, c):
         if re.search(r"\bseq\.(firreg|compreg)\b|\bllhd\.", f.read_text()):
             return CheckResult("unavailable", "circt-lec",

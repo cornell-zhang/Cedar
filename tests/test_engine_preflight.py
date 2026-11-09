@@ -71,3 +71,13 @@ def test_run_lock_prevents_concurrent_advance(tmp_path, toolchain, monkeypatch):
         with pytest.raises(WorkflowError):
             Run(run.dir).advance()
     assert run.advance() == "missing_capability"
+
+
+def test_run_wait_reports_final_state(tmp_path, toolchain, monkeypatch):
+    from cedar.cli import main
+    monkeypatch.setenv("CEDAR_STATE_HOME", str(tmp_path / "state"))
+    sel = str(toolchain.bin_dir.parent) if toolchain.bin_dir.name == "bin" else None
+    run = Run.create(str(_setup(tmp_path, with_equivalence=False)), str(tmp_path / "runs"), toolchain_prefix=sel)
+    assert main(["run", "wait", "--run", str(run.dir), "--timeout", "5"]) == 1   # running, nobody advancing
+    run.advance()
+    assert main(["run", "wait", "--run", str(run.dir), "--timeout", "5"]) == 1   # missing_capability -> failure

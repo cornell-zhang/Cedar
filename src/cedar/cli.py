@@ -320,6 +320,42 @@ def cmd_run(a) -> int:
     return EXIT_CONFIG
 
 
+def cmd_run_wait(a) -> int:
+    """Block until the run needs the agent, finishes, or fails (or --timeout)."""
+    import fcntl
+    run_dir = Path(a.run)
+    state = run_dir / "run.json"
+    deadline = time.monotonic() + a.timeout
+    while True:
+        busy = False
+        lock = run_dir / ".lock"
+        if lock.exists():
+            with open(lock, "a") as fh:
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fh, fcntl.LOCK_UN)
+                except OSError:
+                    busy = True
+        status = json.loads(state.read_text()).get("status") if state.is_file() else "missing"
+        if not busy and status != "running":
+            print(f"run status: {status}")
+            if status == "awaiting_agent":
+                from .workflow.engine import Run
+                t = Run(run_dir).pending_task()
+                if t is not None:
+                    print(f"pending task {t.id} ({t.kind}): {t.prompt_file}")
+                return EXIT_AWAIT
+            return EXIT_OK if status in ("completed", "incomplete") else EXIT_FAIL
+        if not busy and status == "running" and state.is_file():
+            # Nobody is advancing the run (e.g. the start command was killed).
+            print("run status: running, but no process is advancing it; resume with `cedar run continue`")
+            return EXIT_FAIL
+        if time.monotonic() > deadline:
+            print(f"still running after {a.timeout}s (status {status}); call `cedar run wait` again")
+            return 4
+        time.sleep(5)
+
+
 def cmd_task(a) -> int:
     from .workflow.engine import Run
     run = Run(Path(a.run))
@@ -518,6 +554,11 @@ def build_parser() -> argparse.ArgumentParser:
             q.add_argument("--model")
             q.add_argument("--retry", action="store_true")
         q.set_defaults(fn=cmd_run)
+
+    q = rs.add_parser("wait", help="block until the run needs the agent, finishes or fails")
+    q.add_argument("--run", required=True)
+    q.add_argument("--timeout", type=int, default=540, help="seconds (default 540)")
+    q.set_defaults(fn=cmd_run_wait)
 
     sp = sub.add_parser("task", help="agent task contracts")
     ts = sp.add_subparsers(dest="task_cmd", required=True)

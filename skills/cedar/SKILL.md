@@ -33,10 +33,13 @@ you, printing the task file. `cedar run status --run <run>` shows progress.
 
 Long-running commands: `cedar run start` and `cedar run continue` run EDA tools and can
 take several minutes (the baseline alone is a full synthesis + P&R + power run). If
-your shell tool has a short timeout, run them in the background with output to a log
-file and poll `cedar run status --run <run>` every 20-30 s. Never start a second run
-for the same design because a command was interrupted: resume the existing run with
-`cedar run continue --run <run>` (a run directory is locked while it is advancing).
+your shell tool has a short timeout, pass `--run-id <id>` so you know the run directory
+(`<work-dir>/<id>`), run the command in the background with output to a log file, then
+call `cedar run wait --run <run>`: it returns when a task is pending (exit 3), the run
+finished (0) or failed (1), or after `--timeout` seconds (exit 4; just call it again).
+Do not poll with `pgrep -f` (it matches your own shell command). Never start a second
+run because a command was interrupted: resume with `cedar run continue --run <run>`
+(a run directory is locked while it is advancing).
 
 ## 2. Task loop
 Repeat until the run is `completed` or `incomplete` (or fails):

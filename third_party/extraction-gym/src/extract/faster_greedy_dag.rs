@@ -6,8 +6,9 @@ use super::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 struct CostSet {
-    // It's slightly faster if this is an HashMap rather than an fxHashMap.
-    costs: HashMap<ClassId, Cost>,
+    // Cedar: FxHashMap (deterministic hashing) so that cost totals, and thus
+    // tie-breaking between equal-cost alternatives, are reproducible.
+    costs: FxHashMap<ClassId, Cost>,
     total: Cost,
     choice: NodeId,
 }
@@ -26,7 +27,7 @@ impl FasterGreedyDagExtractor {
 
         if node.children.is_empty() {
             return CostSet {
-                costs: HashMap::from([(cid.clone(), node.cost)]),
+                costs: std::iter::once((cid.clone(), node.cost)).collect(),
                 total: node.cost,
                 choice: node_id.clone(),
             };

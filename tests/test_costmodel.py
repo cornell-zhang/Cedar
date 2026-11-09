@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -78,3 +79,29 @@ def test_extractor_choice_flips_with_weights(tmp_path, toolchain):
         out = subprocess.run([toolchain.tool("extract_result"), str(p)], capture_output=True, text=True, check=True).stdout
         picks[label] = "comb_mul" if "comb_mul" in out else "comb_add"
     assert picks == {"area": "comb_add", "delay": "comb_mul"}
+
+
+def test_extractor_is_deterministic(tmp_path, toolchain):
+    """Equal-cost alternatives (from commutativity) must be tie-broken the same
+    way on every run; this e-graph shape exposed run-to-run differences before
+    the extractor used deterministic hashing."""
+    from importlib import resources
+
+    from cedar.egraph import pipeline
+    from cedar.rules import certify
+    rtl = tmp_path / "dist_mac.v"
+    rtl.write_text("module dist_mac(input clk, input rst, input [7:0] a, b, c, output reg [15:0] y);\n"
+                   "wire [15:0] a16 = {8'd0, a}; wire [15:0] b16 = {8'd0, b}; wire [15:0] c16 = {8'd0, c};\n"
+                   "always @(posedge clk) if (rst) y <= 16'd0; else y <= a16 * b16 + a16 * c16;\nendmodule\n")
+    sigs = certify.signatures_from_template(toolchain.template("circt.egg").read_text())
+    rules = {n: resources.files("cedar").joinpath(f"data/rules/{n}.egg").read_text()
+             for n in ("mul_commute", "mul_factor_common")}
+    adm = certify.admit(rules, [1, 8, 16], None, sigs)
+    analysis = pipeline.eqsat(toolchain, tmp_path / "a", "dist_mac", [str(rtl)], "dist_mac", [], 1)
+    eq = pipeline.eqsat(toolchain, tmp_path / "e", "dist_mac", [str(rtl)], "dist_mac",
+                        [i.text for i in adm.admitted], 4)
+    scales = CM.design_scales(json.loads(Path(analysis.egraph_json).read_text()))
+    CM.apply_costs(Path(eq.egraph_json), {"area": 1 / 3, "delay": 1 / 3, "power": 1 / 3}, scales)
+    outs = {subprocess.run([toolchain.tool("extract_result"), eq.egraph_json], capture_output=True, text=True,
+                           check=True).stdout for _ in range(40)}
+    assert len(outs) == 1

@@ -44,7 +44,15 @@ Reproducible with
 * Removed `data/` (≈246 MB of upstream benchmark e-graphs); it is not needed to
   build or run `extract_result` and remains available from the upstream
   repository. `test_data/` is retained.
-* No source files were edited.
+* **Deterministic extraction (Cedar change).** `src/extract/faster_greedy_dag.rs`
+  kept per-class DAG cost sets in `std::collections::HashMap`, whose per-process
+  random seed changes the floating-point summation order of cost totals, so
+  equal-cost alternatives were tie-broken differently from run to run (observed:
+  1 of 6 runs on the same e-graph chose a different, equal-cost term, which
+  synthesized to a different netlist). The cost sets and the S-expression
+  printer in `src/extract_result.rs` now use `rustc_hash::FxHashMap/FxHashSet`
+  (deterministic hashing; `rustc-hash` was already a dependency). Covered by
+  `tests/test_costmodel.py::test_extractor_is_deterministic`.
 
 ## Build dependencies
 

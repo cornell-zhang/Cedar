@@ -74,7 +74,7 @@ fn main() {
     result.check(&egraph);
 
     // Build a map from class_id to node_id for easy lookup
-    let class_to_node: std::collections::HashMap<ClassId, NodeId> = result.choices.clone().into_iter().collect();
+    let class_to_node: rustc_hash::FxHashMap<ClassId, NodeId> = result.choices.clone().into_iter().collect();
     
     // Function to recursively build S-expression strings
     fn is_nullary_function(op: &str) -> bool {
@@ -88,9 +88,9 @@ fn main() {
 
     fn count_refs(
         egraph: &EGraph,
-        class_to_node: &std::collections::HashMap<ClassId, NodeId>,
+        class_to_node: &rustc_hash::FxHashMap<ClassId, NodeId>,
         class_id: &ClassId,
-        ref_counts: &mut std::collections::HashMap<ClassId, usize>,
+        ref_counts: &mut rustc_hash::FxHashMap<ClassId, usize>,
     ) {
         let count = ref_counts.entry(class_id.clone()).or_insert(0);
         *count += 1;
@@ -104,10 +104,10 @@ fn main() {
 
     fn build_sexpr_dag(
         egraph: &EGraph,
-        class_to_node: &std::collections::HashMap<ClassId, NodeId>,
+        class_to_node: &rustc_hash::FxHashMap<ClassId, NodeId>,
         class_id: &ClassId,
-        shared: &std::collections::HashSet<ClassId>,
-        aliases: &mut std::collections::HashMap<ClassId, String>,
+        shared: &rustc_hash::FxHashSet<ClassId>,
+        aliases: &mut rustc_hash::FxHashMap<ClassId, String>,
         defs: &mut Vec<String>,
         alias_counter: &mut usize,
     ) -> String {
@@ -164,11 +164,11 @@ fn main() {
     }
     
     // Count references to detect shared eclasses
-    let mut ref_counts: std::collections::HashMap<ClassId, usize> = std::collections::HashMap::new();
+    let mut ref_counts: rustc_hash::FxHashMap<ClassId, usize> = rustc_hash::FxHashMap::default();
     for root_class in &egraph.root_eclasses {
         count_refs(&egraph, &class_to_node, root_class, &mut ref_counts);
     }
-    let shared: std::collections::HashSet<ClassId> = ref_counts.iter()
+    let shared: rustc_hash::FxHashSet<ClassId> = ref_counts.iter()
         .filter(|(cid, &c)| {
             if c <= 1 { return false; }
             // Only alias Op-type eclasses (actual MLIR operations), not types/attrs/vecs
@@ -182,7 +182,7 @@ fn main() {
         .map(|(k, _)| k.clone())
         .collect();
 
-    let mut aliases = std::collections::HashMap::new();
+    let mut aliases = rustc_hash::FxHashMap::default();
     let mut defs: Vec<String> = Vec::new();
     let mut alias_counter: usize = 0;
     for root_class in &egraph.root_eclasses {

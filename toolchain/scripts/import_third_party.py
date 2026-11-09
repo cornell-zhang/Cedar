@@ -111,8 +111,37 @@ def _edit_dialegg(root: Path) -> None:
             f.write_text(re.sub(r"/work/global/[^/]+/dialegg/", "<dialegg>/", f.read_text()))
 
 
-def _edit_extraction_gym(root: Path) -> None:  # noqa: ARG001 - no edits needed
-    return None
+def _edit_extraction_gym(root: Path) -> None:
+    """Cedar change: deterministic extraction.
+
+    The fork accumulated per-class DAG cost sets in std::collections::HashMap,
+    whose per-process random seed changes the floating-point summation order,
+    so equal-cost alternatives were tie-broken differently from run to run.
+    Use rustc-hash's deterministic FxHashMap/FxHashSet instead (also for the
+    S-expression printer, so `let` numbering is stable).
+    """
+    f = root / "src" / "extract" / "faster_greedy_dag.rs"
+    s = f.read_text()
+    s2 = s.replace(
+        "    // It's slightly faster if this is an HashMap rather than an fxHashMap.\n"
+        "    costs: HashMap<ClassId, Cost>,",
+        "    // Cedar: FxHashMap (deterministic hashing) so that cost totals, and thus\n"
+        "    // tie-breaking between equal-cost alternatives, are reproducible.\n"
+        "    costs: FxHashMap<ClassId, Cost>,")
+    s2 = s2.replace(
+        "                costs: HashMap::from([(cid.clone(), node.cost)]),",
+        "                costs: std::iter::once((cid.clone(), node.cost)).collect(),")
+    if s2 == s or "HashMap<ClassId, Cost>," in s2.replace("FxHashMap<ClassId, Cost>,", ""):
+        raise SystemExit("faster_greedy_dag.rs: expected CostSet HashMap not found")
+    f.write_text(s2)
+    f = root / "src" / "extract_result.rs"
+    s = f.read_text()
+    s2 = (s.replace("std::collections::HashMap::new()", "rustc_hash::FxHashMap::default()")
+           .replace("std::collections::HashMap<", "rustc_hash::FxHashMap<")
+           .replace("std::collections::HashSet<", "rustc_hash::FxHashSet<"))
+    if s2 == s or "std::collections::Hash" in s2:
+        raise SystemExit("extract_result.rs: expected std HashMap/HashSet uses not found")
+    f.write_text(s2)
 
 
 EDITS = {"dialegg": _edit_dialegg, "extraction-gym": _edit_extraction_gym}

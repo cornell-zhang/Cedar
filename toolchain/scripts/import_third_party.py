@@ -50,6 +50,9 @@ EXCLUDES = {
         # tests/test_open_flow.py; no design-derived input is needed.
         "test/reconstruct_opaque_region_capture",
         "test/lower_loop_carry/comb_process_with_module_clock.mlir",
+        # Retire the external FIR example and all its generated derivatives.
+        # A synthetic selector datapath covers the round-trip instead.
+        "test/circt/fir",
     ],
     "extraction-gym": [
         # 246 MB of upstream benchmark e-graphs; not needed to build
@@ -65,7 +68,6 @@ _PATH_EXPORT_FILES = [
     "test/anywidth_int/run_extract_translate.sh",
     "test/anywidth_int/run_eqsat.sh",
     "test/circt/concatvar/run.sh",
-    "test/circt/fir/roundtrip.sh",
     "test/replacement/run_extract_translate.sh",
     "test/replacement/run_eqsat.sh",
 ]

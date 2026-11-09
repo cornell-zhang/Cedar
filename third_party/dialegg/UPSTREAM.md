@@ -58,6 +58,9 @@ Removed from the snapshot:
   the synthetic mixed-process regression in Cedar's `tests/test_open_flow.py`.
 * `test/reconstruct_opaque_region_capture/` — replaced by the synthetic
   opaque-region capture regression in Cedar's `tests/test_open_flow.py`.
+* `test/circt/fir/` — the external FIR example, generated compiler outputs,
+  logs and helper scripts. Replaced by an independent synthetic selector
+  datapath regression in Cedar's `tests/test_open_flow.py`.
 
 Functional changes to `egg-opt`:
 
@@ -82,8 +85,8 @@ Other edits:
 * `CMakeLists.txt`: the `CIRCT_SOURCE_DIR` / `CIRCT_BUILD_DIR` cache defaults
   pointed to a developer machine; they are now empty and must be passed
   explicitly (Cedar's build scripts always pass them).
-* Eight demo/test shell scripts (`circt-test/*.sh`, `test/*/run*.sh`,
-  `test/circt/fir/roundtrip.sh`): hard-coded `export PATH=<developer path>`
+* Seven demo/test shell scripts (`circt-test/*.sh`, `test/*/run*.sh`):
+  hard-coded `export PATH=<developer path>`
   lines replaced by `DIALEGG_TOOLS_PATH`.
 * `test/vec_of_rule/{README,COST_TUNING_SUMMARY}.md`: developer path replaced by
   `<dialegg>/`.

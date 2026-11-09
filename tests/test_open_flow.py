@@ -11,6 +11,29 @@ from cedar.egraph import pipeline
 from cedar.verification import check
 
 
+def test_synthetic_selector_round_trip(tmp_path, toolchain):
+    """Preserve a nonstandard width and two outputs through the real compiler."""
+    source = tmp_path / "selector.v"
+    source.write_text("""module selector(
+  input [6:0] x, y,
+  input choose_sum,
+  output [6:0] value,
+  output equal
+);
+  wire [6:0] masked = y ^ 7'h35;
+  assign value = choose_sum ? (x + masked) : (x - masked);
+  assign equal = (x == y);
+endmodule
+""")
+    eq = pipeline.eqsat(toolchain, tmp_path / "run", "selector", [str(source)],
+                        "selector", iterations=1)
+    assert 7 in eq.widths
+    result = pipeline.extract(toolchain, eq, "selector")
+    pipeline.reparse_check(toolchain, Path(result.verilog), "selector", tmp_path / "reparse")
+    assert check("circt-lec", [str(source)], [result.verilog], "selector",
+                 tmp_path / "lec", toolchain=toolchain).status == "passed"
+
+
 def test_data_observing_process_does_not_gain_register(tmp_path, toolchain):
     """A module clock must not turn an unrelated combinational wait into a flop."""
     source = tmp_path / "mixed_process.mlir"

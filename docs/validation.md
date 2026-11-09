@@ -10,16 +10,20 @@ The cleanup and optional hierarchy-preserving workflow were checked against
 the rebuilt DialEgg compiler, with unchanged pinned LLVM/CIRCT, egglog and
 extractor dependencies reused from the earlier validated builds:
 
-* Repository tests: **181 passed**.
+* Repository tests: **182 passed**.
 * Clean Python 3.11 environment, installed exclusively from refreshed wheels,
-  tests from the workflow sdist: **180 passed, 1 skipped** (checkout-only
+  tests from the workflow sdist: **181 passed, 1 skipped** (checkout-only
   example configuration).
 * Refreshed toolchain wheel, workflow wheel and workflow sdist: ABI,
   binary/manifest hashes, licenses, package contents and private-data scans
   passed. Compiler binaries have no runtime library search paths.
-* Re-importing the pinned DialEgg snapshot reproduces all **238** remaining
+* Re-importing the pinned DialEgg snapshot reproduces all **226** remaining
   implementation files exactly. Design-derived regression inputs were replaced
   by independent synthetic capture/type and mixed-clock/process regressions.
+* The legacy FIR test directory, including generated outputs and helper
+  scripts, was retired. An independent seven-bit selector datapath with two
+  outputs now exercises the complete compiler/extractor round-trip, Verilog
+  re-parsing and equivalence checking.
 * Hierarchy tests optimize two private child bodies independently, retain an
   explicitly opaque child and all instances, and prove the assembled RTL
   equivalent with `circt-lec`. Both the flat default and hierarchical option
@@ -36,7 +40,7 @@ extractor dependencies reused from the earlier validated builds:
 * Pinned dependency and vendored-crate source trees were hash-checked against
   the earlier complete source bundle before reuse. The changed DialEgg sources
   from the refreshed bundle built with networking disabled against cached
-  pinned LLVM/CIRCT libraries; all **19** hierarchy, opacity and open-flow
+  pinned LLVM/CIRCT libraries; all **20** hierarchy, opacity and open-flow
   tests passed with that binary. The source bundle includes the current Cedar
   snapshot and all pinned dependency sources and vendored crates.
 

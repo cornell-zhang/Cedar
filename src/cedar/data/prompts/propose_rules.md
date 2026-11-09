@@ -32,6 +32,9 @@ width it is applied to** before use; unprovable or unguarded rules are rejected.
   vector. Operands seen only through `comb_extract`, `comb_icmp`, `comb_concat`,
   `comb_replicate` or the right-hand side have no fixed width and the rule is rejected.
 - Build new vectors with `(vec-push (vec-empty) ?x)`; never match vector constructors in premises.
+- Actions are `let` bindings and exactly one `union`. Name `let` bindings WITHOUT `?`
+  (`(let s (comb_add ?b ... ?t))`, then use `s`): `?` names are reserved for pattern variables
+  and a rule with `(let ?s ...)` is rejected.
 - No stateful ops (`seq_firreg`, `llhd_*`). No timing/latency changes.
 - Start each file with `;` comments stating the identity and why it is valid for all inputs.
 

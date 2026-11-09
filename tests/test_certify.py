@@ -454,3 +454,14 @@ def test_operand_sorts_follow_declarations(toolchain, template_sigs):
     assert not problems and sorts["?a"] == {"Op"} and sorts["?b"] == {"Op"}
     unknown = "(rule ((= ?l (comb_add ?a ?v (I8))) (= 0 (vec-length ?v))) ((union ?l (mystery ?a))) :ruleset rules)"
     assert C.prove_instance("unknown", unknown, 8, template_sigs)[0].status != "PROVED"
+
+
+def test_prompt_let_guidance_matches_the_certifier(template_sigs):
+    """Host runs lost correct rules to `(let ?x ...)`; the prompt must say so."""
+    prompt = resources.files("cedar").joinpath("data/prompts/propose_rules.md").read_text()
+    assert "WITHOUT `?`" in prompt and "(let ?s ...)" in prompt
+    base = ("(rule ((= ?l (comb_add ?a ?v ?t)) (= 1 (vec-length ?v)) (= ?b (vec-get ?v 0))) "
+            "((let {n} (comb_add ?b (vec-push (vec-empty) ?a) ?t)) (union ?l {n})) :ruleset rules)")
+    assert C.prove_instance("ok", base.format(n="s"), 8, template_sigs)[0].status == "PROVED"
+    c = C.prove_instance("bad", base.format(n="?s"), 8, template_sigs)[0]
+    assert c.status == "REJECTED" and "looks like a pattern variable" in c.detail

@@ -288,6 +288,12 @@ tests fail.
   measurement subprocess, a report written as the budget expires, and an
   unattended agent that writes valid files but exits nonzero or hangs.
 
+* Host runs on the release package showed agents losing otherwise correct
+  rules to `(let ?x ...)` (rejected since the third review's alpha-renaming,
+  but not stated in the rule prompt). The prompt and skill now state that
+  `let` names carry no `?`; the Codex rule from that run proves at 1/8/16
+  bits once renamed.
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.

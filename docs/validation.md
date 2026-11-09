@@ -30,10 +30,10 @@ part of the repository.
 
 | Environment | Result |
 | --- | --- |
-| repository checkout (editable install, Python 3.13), container-built toolchain prefix | 158 passed |
+| repository checkout (editable install, Python 3.13), container-built toolchain prefix | 163 passed |
 | repository checkout, toolchain prefix built natively from the source bundle | passed (see build section) |
-| fresh venv from the final wheels (Python 3.11, toolchain from the `cedar-toolchain` wheel), tests from the sdist | 157 passed, 1 skipped (example templates need the checkout) |
-| fresh venv in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28, Python 3.9), final wheels | 157 passed, 1 skipped |
+| fresh venv from the final wheels (Python 3.11, toolchain from the `cedar-toolchain` wheel), tests from the sdist | 162 passed, 1 skipped (example templates need the checkout) |
+| fresh venv in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28, Python 3.9), final wheels | 162 passed, 1 skipped |
 
 Toolchain-dependent tests run the real binaries: the weighted cost model must
 flip the real extractor's choice, the extractor must be deterministic on an
@@ -69,9 +69,9 @@ measurement gates and process-group cleanup active):
 
 | Host | Run wall clock | Agent session | Result |
 | --- | --- | --- | --- |
-| Claude Code (`--plugin-dir`) | 5 min 15 s | 5 min 33 s | completed, contract met, iteration successful; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; the agent's rule proved at 1/8/16 bits |
-| Codex (installed plugin) | 5 min 24 s | 6 min 12 s | completed, contract met; identical extracted result; agent rule proved at 1/8/16 bits |
-| Unattended (`cedar run start --agent-cmd "claude -p ..." --run-timeout-s 1500`) | 4 min 55 s | — | completed, contract met; both agent tasks accepted after a zero exit on the first attempt; agent rule proved at 1/8/16 bits |
+| Claude Code (`--plugin-dir`) | 5 min 11 s | 5 min 33 s | completed, contract met, iteration successful; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; the agent's rule proved at 1/8/16 bits |
+| Codex (installed plugin) | 5 min 45 s | 6 min 32 s | completed, contract met; identical extracted result; agent rule proved at 1/8/16 bits |
+| Unattended (`cedar run start --agent-cmd "claude -p ..." --run-timeout-s 1500`) | 4 min 56 s | — | completed, contract met; both agent tasks accepted after a zero exit on the first attempt; agent rule proved at 1/8/16 bits |
 
 Every agent task in these runs was accepted on its first submission (now
 validated under the run budget), and every `cedar run continue` re-probed the
@@ -96,7 +96,8 @@ the vector-cardinality fix, 5 min 00 s / 5 min 37 s after the nested-operand
 fix, 4 min 58 s / 5 min 56 s after the measurement gates, 5 min 18 s /
 6 min 13 s after the run budget, 5 min 03 s / 5 min 34 s after the let-naming
 prompt fix, 5 min 08 s / 5 min 33 s after the type, deadline and identity
-fixes, 5 min 54 s / 7 min 17 s after the resume fixes (load ~30); in two of them an
+fixes, 5 min 54 s / 7 min 17 s after the resume fixes (load ~30), 5 min 15 s /
+5 min 24 s after the submission-budget fix; in two of them an
 agent's otherwise correct rule was rejected for `(let ?x ...)`, which led to
 the prompt fix. Earlier release-candidate runs: 4 min 57 s / 5 min 19 s
 (third review), 6 min 58 s / 5 min 59 s (second review), and a negative check

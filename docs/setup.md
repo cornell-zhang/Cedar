@@ -89,7 +89,16 @@ simulation, saif, power, equivalence):
 * **configured** — present and schema-valid in the tool profile;
 * **available** — the executable resolves inside the profile's environment;
 * **validated** — `cedar flow-check` passed for this exact tool and technology
-  profile with the same resolved executables (`stale` once anything changes).
+  profile with the same tools: the validation record stores, per stage, the
+  resolved path, the executable's real path and content hash and the version
+  reported by a short adapter-specific probe (`dc_shell -version`,
+  `pt_shell -version`, `vcs -ID`, `vcd2saif -version`, `innovus -version`,
+  `lec -version`), plus the environment identity (setup-script hash, `PATH`
+  after setup and hashes of the required variables' values -- never the values).
+  It is `stale` once any of these changes, e.g. a tool replaced at the same path,
+  a wrapper pointing at a new release, or an edited setup script. Runs record
+  the same identity in their provenance at preflight and refuse to resume if a
+  tool's path, content or environment changed.
 
 Runs check that every stage required by the measurement mode is available and
 stop otherwise (`missing_capability`); they never downgrade a full-PPA run.

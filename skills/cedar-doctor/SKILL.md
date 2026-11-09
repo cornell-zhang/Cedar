@@ -10,7 +10,8 @@ description: Diagnose a Cedar installation - toolchain selection, Z3, agent CLIs
    - **configured** — present and schema-valid in the profile;
    - **available** — the executable resolves inside the profile environment;
    - **validated** — `cedar flow-check` passed for this exact profile/technology and
-     tool executables (`stale` means something changed since).
+     tools (path, executable content hash, probed version, environment setup);
+     `stale` lists what changed since (e.g. `synthesis: version A -> B`).
 3. Toolchain: Cedar uses only an explicitly selected toolchain (cedar-toolchain wheel,
    `CEDAR_TOOLCHAIN_PREFIX`, `--toolchain-prefix`, or `toolchain.prefix` in the
    profile) and never whatever happens to be on PATH. `manifest_match: false` means

@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
+from . import proc
 from .eda import flow
 from .egraph import pipeline
 from .toolchain import Toolchain
@@ -77,6 +78,8 @@ def check(mode: str, golden: Sequence[str], candidate: Sequence[str], top: str, 
                 return CheckResult("unavailable", mode, "circt-lec not in the selected toolchain", 0.0)
             return _circt_lec(toolchain, golden, candidate, top, work, t0, ctx)
         return CheckResult("error", mode, f"unknown verification mode {mode!r}", 0.0)
+    except proc.DeadlineExpired:
+        raise                                  # the run budget ran out: no verdict, the run expires
     except Exception as exc:  # noqa: BLE001 - any crash is an error, never a pass
         return CheckResult("error", mode, f"{type(exc).__name__}: {exc}", round(time.monotonic() - t0, 2))
 
@@ -107,9 +110,11 @@ def _circt_lec(tc: Toolchain, golden: Sequence[str], candidate: Sequence[str], t
     if "(assert" not in text:
         return CheckResult("error", "circt-lec", "no miter assertion in circt-lec output", round(time.monotonic() - t0, 2))
     s = z3.Solver()
-    s.set("timeout", 120000)
+    # capped by the run budget; never 0 (= unlimited): bounded_ms raises instead
+    s.set("timeout", proc.bounded_ms(120000))
     s.add(z3.parse_smt2_string(text))
     r = s.check()
+    proc.check()                               # a solve cut short by the budget gives no verdict
     secs = round(time.monotonic() - t0, 2)
     if r == z3.unsat:
         return CheckResult("passed", "circt-lec", "SMT miter UNSAT (equivalent)", secs, str(smt))

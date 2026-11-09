@@ -36,6 +36,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import z3  # z3-solver is a declared dependency of cedar-workflow
 
+from .. import proc as _proc
+
 # Cedar: this module is the historical verifier used as a library by
 # cedar.rules.certify, which proves each rule instance at ONE exact width.
 # The legacy multi-width sweep below is kept for the standalone CLI only;
@@ -1395,6 +1397,9 @@ def verify_rule(rule: ParsedRule, sweep: Optional[List[int]] = None,
                     f"union-width-mismatch lhs={lhs_bv.size()} rhs={rhs_bv.size()}"
                 )
 
+            # The run budget caps every solve; a zero timeout (= unlimited
+            # in Z3) is impossible: bounded_ms returns >= 1 or raises.
+            solve_budget_ms = _proc.bounded_ms(solve_budget_ms)
             solver = z3.Solver()
             solver.set("timeout", solve_budget_ms)
             for a in assertions:
@@ -1419,8 +1424,13 @@ def verify_rule(rule: ParsedRule, sweep: Optional[List[int]] = None,
             continue
         except TranslationError as exc:
             return "UNKNOWN", str(exc)
+        except _proc.DeadlineExpired:
+            raise
         except Exception as exc:
             return "UNKNOWN", f"z3-exception ({type(exc).__name__}: {exc})"
+        if _proc.expired():
+            # the solve was cut short by the run budget: no verdict at all
+            raise _proc.DeadlineExpired("run budget expired during a proof")
 
     if n_proven == 0:
         if last_unknown is not None:

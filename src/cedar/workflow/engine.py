@@ -300,6 +300,13 @@ class Run:
                 if stored.get(path) != now_fp.get(path):
                     what = "added" if path not in stored else ("removed" if path not in now_fp else "changed")
                     changed.append(f"{stored.get(path, now_fp.get(path, ['?']))[0]} {path} {what}")
+        ident = self.s["provenance"].get("tool_identity")
+        if ident:
+            # Same tools as at preflight (path, real path, content, environment);
+            # version probes are recorded at preflight and compared by `cedar doctor`.
+            from ..setup import identity_changes, tool_identity
+            changed += [f"tool {c}" for c in identity_changes(ident, tool_identity(self.tools, versions=False),
+                                                                versions=False)]
         cid = cfgmod.constraints_id(self.design, self.tech, self.s["corner"])
         if cid != self.s["constraints_id"]:
             changed.append(f"constraints id {self.s['constraints_id']} -> {cid}")
@@ -549,6 +556,9 @@ class Run:
         if self.s["measurement"].get("mode", "full-ppa") == "full-ppa" and self.s["measurement"].get("approximate_pruning"):
             self.log("NOTE: approximate DC-dominance pruning enabled (heuristic; pruned candidates stay unmeasured)")
         self.s["capabilities"] = caps
+        # Which tools (path, content, version) and environment measure this run.
+        from ..setup import tool_identity
+        self.s["provenance"]["tool_identity"] = tool_identity(self.tools)
         mlir = self.dir / "inputs" / "original.mlir"
         dd = self.design.data
         pipeline.frontend(self.tc, self.s["rtl"], self.s["top"], mlir, self.dir / "inputs",

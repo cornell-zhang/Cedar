@@ -46,6 +46,44 @@ class StageResult:
         return asdict(self)
 
 
+# Adapter-specific version probes: (arguments, regex for the version string).
+# They run inside the profile environment with a short timeout; the parsed
+# version (or, if none is recognized, a hash of the probe output) is part of
+# a tool's identity.
+VERSION_PROBES: Dict[str, tuple] = {
+    "synopsys-dc": (["-version"], r"dc_shell version\s*-\s*(\S+)"),
+    "synopsys-primetime": (["-version"], r"pt_shell version\s*-\s*(\S+)"),
+    "synopsys-vcs": (["-ID"], r"Compiler version\s*=\s*([^\r\n]+?)\s*$"),
+    "synopsys-vcd2saif": (["-version"], r"translator version\s+(\S+)"),
+    "cadence-innovus": (["-version"], r"Innovus\s+(v\S+)"),
+    "cadence-conformal": (["-version"], r"Tool:\s*lec\s+(\S+)"),
+}
+FILE_HASH_LIMIT = 64 << 20
+
+
+def file_identity(path: str) -> Dict[str, Any]:
+    """Content identity of a resolved executable (symlinks resolved)."""
+    import hashlib
+    real = os.path.realpath(path)
+    try:
+        st = os.stat(real)
+    except OSError:
+        return {"realpath": real, "sha256": "missing"}
+    h = hashlib.sha256()
+    with open(real, "rb") as fh:
+        if st.st_size <= FILE_HASH_LIMIT:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+            kind = "full"
+        else:                               # very large binary: size + mtime + head/tail
+            h.update(f"{st.st_size}:{int(st.st_mtime)}".encode())
+            h.update(fh.read(1 << 20))
+            fh.seek(-(1 << 20), os.SEEK_END)
+            h.update(fh.read())
+            kind = "size+mtime+head+tail"
+    return {"realpath": real, "size": st.st_size, "sha256": h.hexdigest(), "hash": kind}
+
+
 class ToolEnv:
     """Shell environment derived from a tool profile."""
 
@@ -102,6 +140,33 @@ class ToolEnv:
             return StageResult(stage, "unavailable", time.monotonic() - t0, returncode=p.returncode,
                                detail=((p.stderr or "").strip()[-300:] or f"{t['executable']} not found"))
         return StageResult(stage, "ok", round(time.monotonic() - t0, 2), detail=out)
+
+    def version_probe(self, stage: str, timeout: int = 60) -> Dict[str, Any]:
+        """Bounded, adapter-specific version query inside the profile environment."""
+        import hashlib
+        t = self.tools[stage]
+        args, rx = VERSION_PROBES.get(t["adapter"], (["--version"], None))
+        script = self.prefix(t.get("env_required") or []) + "\n" + self.command(stage, args)
+        p = procmod.run(["bash", "-c", script], timeout=timeout)
+        out = ((p.stdout or "") + (p.stderr or ""))
+        m = re.search(rx, out, re.M) if rx else None
+        return {"version": m.group(1) if m else None, "probe_sha256": hashlib.sha256(out.encode()).hexdigest(),
+                "probe_status": "timeout" if p.timed_out else f"exit {p.returncode}",
+                "probe_head": out.strip().splitlines()[0][:160] if out.strip() else ""}
+
+    def setup_identity(self, timeout: int = 60) -> Dict[str, Any]:
+        """The environment the tools run in: setup script content, PATH after
+        setup and (hashes of) the required variables' values."""
+        import hashlib
+        ident: Dict[str, Any] = {"setup_script": self.setup_script, "path_prepend": list(self.path_prepend)}
+        ident["setup_script_sha256"] = (file_identity(self.setup_script)["sha256"] if self.setup_script else None)
+        names = sorted(set(self.env_required) | {v for t in self.tools.values() for v in (t.get("env_required") or [])})
+        dump = " ".join(f'printf "%s=%s\\0" {shlex.quote(n)} "${{{n}:-}}";' for n in names)
+        p = procmod.run(["bash", "-c", self.prefix() + f'\nprintf "PATH=%s\\0" "$PATH"; {dump}'], timeout=timeout)
+        ident["environment_sha256"] = (hashlib.sha256((p.stdout or "").encode()).hexdigest()
+                                       if p.returncode == 0 else f"<setup {('timeout' if p.timed_out else p.returncode)}>")
+        ident["required_variables"] = names
+        return ident
 
     def run(self, stage: str, args: Sequence[str], cwd: Path, log: Path, timeout: Optional[int] = None,
             stdin_text: Optional[str] = None, env_extra: Optional[Dict[str, str]] = None,

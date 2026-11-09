@@ -335,6 +335,34 @@ tests fail.
   keep valid signless rules (including `(Int 12)`) proving and running. The seed
   rules and the final host runs' agent rules still prove.
 
+## Ninth review: in-process deadlines and tool identity
+
+* The run budget bounded subprocesses but not in-process Z3 work: a proof
+  continued for its full solver allowance (2.52 s with 0.1 s of budget left in
+  the reviewer's probe; up to 60 s per instance in production) and admission
+  went on to the next instance. Every rule proof and the circt-lec miter solve
+  now get `min(solver allowance, remaining budget)` as their Z3 timeout
+  (`proc.bounded_ms`: never 0, which Z3 treats as unlimited; it raises instead),
+  admission and re-certification check the budget before every instance
+  (including cached certificates), and a proof or solve that ends after the
+  budget raises `DeadlineExpired` -- no certificate, no verdict -- so the run
+  expires (sticky failed). The reviewer's probe now stops after 0.10 s.
+  Regressions use real Z3 (a proof that needs over a minute is cut at the
+  deadline; nothing starts after expiry; a run expiring during rule admission
+  fails within seconds) and a real solver whose solve outlasts the budget for
+  the miter.
+* End-to-end validation compared only `command -v` paths, so a tool replaced at
+  the same path stayed `validated`. Validation records and run provenance now
+  store each tool's resolved path, real path, content hash and an
+  adapter-specific version probe (bounded, inside the profile environment),
+  plus the environment identity (setup-script hash, `PATH` after setup, hashes
+  of the required variables). `cedar doctor` reports `stale` with the list of
+  changes; records without an identity are stale; a run refuses to resume when a
+  tool's path, content or environment changed. Regressions cover replacement at
+  the same path, a wrapper whose target changes (detected by version), an
+  edited setup script, a changed environment behind an unchanged setup script,
+  a hanging version probe and a run resumed after a tool replacement.
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.

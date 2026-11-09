@@ -279,3 +279,130 @@ def test_unattended_agent_failure_is_not_accepted(mode, why, tmp_path, toolchain
     assert t["status"] == "pending" and t["attempts"] == 2 and why in t["feedback"]
     assert why in run.s["error"]
     assert "direct_1" not in run.s["candidates"]                 # the written files were never accepted
+
+
+# ------------------------------------------------------- in-process Z3 work
+
+HARD_RULE = """(rule ((= ?m (comb_mux ?s (comb_mul ?a ?ops ?t) ?z ?t))
+       (= ?z (hw_constant (NamedAttr "value" (IntegerAttr 0 ?t)) ?t))
+       (= 1 (vec-length ?ops)))
+      ((union ?m (comb_mul (comb_mux ?s ?a ?z ?t) (vec-push (vec-empty) (vec-get ?ops 0)) ?t)))
+      :ruleset rules)"""                       # Z3 needs well over a minute at 16 bits
+
+
+def test_budget_cuts_a_running_proof(template_sigs):
+    from cedar.rules import certify as Cert
+    proc.set_deadline(time.time() + 0.3)
+    t0 = time.monotonic()
+    with pytest.raises(proc.DeadlineExpired):
+        Cert.prove_instance("hard", HARD_RULE, 16, template_sigs, timeout_ms=60000)
+    assert time.monotonic() - t0 < 3.0          # not the 60 s solver allowance
+
+
+def test_no_proof_starts_after_expiry(template_sigs, monkeypatch):
+    from cedar.rules import certify as Cert
+    from cedar.rules import z3verify as zv
+    calls = []
+    real = zv.verify_rule
+
+    def counting(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(zv, "verify_rule", counting)
+    from importlib import resources
+    seeds = {f.name[:-4]: f.read_text() for f in resources.files("cedar").joinpath("data/rules").iterdir()
+             if f.name.endswith(".egg")}
+    rules = {"a_hard": HARD_RULE, **seeds}       # sorted first: the hard proof runs into the deadline
+    proc.set_deadline(time.time() + 0.3)
+    with pytest.raises(proc.DeadlineExpired):
+        Cert.admit(rules, [16, 8], None, template_sigs, timeout_ms=60000)
+    assert len(calls) == 1                       # nothing after the interrupted proof
+    calls.clear()
+    proc.set_deadline(time.time() - 1)
+    with pytest.raises(proc.DeadlineExpired):
+        Cert.admit(seeds, [8], None, template_sigs)
+    assert calls == []                           # and nothing at all once expired
+    with pytest.raises(proc.DeadlineExpired):    # re-certification goes through prove_instance
+        Cert.prove_instance("seed", next(iter(seeds.values())), 8, template_sigs)
+
+
+def test_cached_admission_also_stops_at_expiry(tmp_path, template_sigs):
+    """Even certificate reuse (no Z3 work) stops iterating once the budget expired."""
+    from importlib import resources
+
+    from cedar.rules import certify as Cert
+    seeds = {f.name[:-4]: f.read_text() for f in resources.files("cedar").joinpath("data/rules").iterdir()
+             if f.name.endswith(".egg")}
+    store = Cert.CertificateStore(tmp_path / "certs", template_sigs)
+    assert Cert.admit(seeds, [8], store, template_sigs).admitted       # warm cache, no deadline
+    proc.set_deadline(time.time() - 1)
+    with pytest.raises(proc.DeadlineExpired):
+        Cert.admit(seeds, [8], store, template_sigs)
+
+
+def test_solver_timeout_is_never_zero():
+    assert proc.bounded_ms(0) == 1               # 0 would mean "no limit" to Z3
+    proc.set_deadline(time.time() + 0.0005)
+    time.sleep(0.002)
+    with pytest.raises(proc.DeadlineExpired):
+        proc.bounded_ms(60000)
+    proc.set_deadline(time.time() + 2.0)
+    assert 1 <= proc.bounded_ms(60000) <= 2000
+
+
+def test_budget_caps_the_miter_solver(tmp_path, toolchain, monkeypatch):
+    """The circt-lec miter solve gets the remaining budget as its Z3 timeout,
+    and a solve that outlasts the budget yields no verdict."""
+    import z3
+
+    from cedar import verification as V
+    a, b = tmp_path / "a.v", tmp_path / "b.v"
+    a.write_text("module m(input [7:0] x, y, output [7:0] o); assign o = x * y + x; endmodule\n")
+    b.write_text("module m(input [7:0] x, y, output [7:0] o); assign o = x * (y + 8'd1); endmodule\n")
+    asked, given = [], []
+    real_bounded = proc.bounded_ms
+
+    def at_solve(ms):                           # the budget is nearly spent when the miter is solved
+        asked.append(ms)
+        proc.set_deadline(time.time() + 0.4)
+        return real_bounded(ms)
+
+    class SlowSolver(z3.Solver):                # a real solver whose solve outlasts the budget
+        def set(self, *a, **k):
+            if a and a[0] == "timeout":
+                given.append(a[1])
+            return super().set(*a, **k)
+
+        def check(self, *a):
+            time.sleep(0.6)
+            return super().check(*a)
+
+    monkeypatch.setattr(V.proc, "bounded_ms", at_solve)
+    monkeypatch.setattr(z3, "Solver", SlowSolver)
+    with pytest.raises(proc.DeadlineExpired):
+        V.check("circt-lec", [str(a)], [str(b)], "m", tmp_path / "lec", toolchain=toolchain)
+    assert asked == [120000] and given and 1 <= given[0] <= 400
+
+
+def test_run_expiring_during_rule_admission_fails(tmp_path, toolchain, monkeypatch):
+    from cedar.workflow import engine as E
+    real = E.Run.phase_rules_admit
+
+    def admit_with_hard_rule(self):
+        self.s["budget"]["deadline_epoch"] = time.time() + 0.5
+        proc.set_deadline(self.s["budget"]["deadline_epoch"])
+        from cedar.rules import certify as Cert
+        Cert.admit({"hard": HARD_RULE}, [16], None, Cert.signatures_from_template(
+            self.tc.template("circt.egg").read_text()), timeout_ms=60000)
+        return real(self)
+
+    monkeypatch.setattr(E.Run, "phase_rules_admit", admit_with_hard_rule)
+    run = _run(tmp_path, toolchain, monkeypatch)
+    assert run.advance() == "awaiting_agent"
+    assert _answer(run)[0]
+    t0 = time.monotonic()
+    assert run.advance() == "failed"
+    assert time.monotonic() - t0 < 30
+    assert run.s["expired"]["during"] == "rules_admit"
+    assert E.Run(run.dir).advance() == "failed"                  # sticky

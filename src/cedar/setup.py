@@ -147,7 +147,7 @@ def _abs_val(v, f, base: Path):
 # ---------------------------------------------------------------- validation records
 
 def tool_fingerprint(tools: cfgmod.Loaded) -> Dict[str, str]:
-    """Resolved executables for every configured stage (identity for staleness)."""
+    """Resolved executables for every configured stage."""
     from .eda.runner import ToolEnv
     env = ToolEnv(tools)
     fp = {}
@@ -155,6 +155,52 @@ def tool_fingerprint(tools: cfgmod.Loaded) -> Dict[str, str]:
         r = env.which(st)
         fp[st] = r.detail if r.ok else f"<{r.status}>"
     return fp
+
+
+def tool_identity(tools: cfgmod.Loaded, versions: bool = True) -> Dict:
+    """Identity of the tools a profile runs: per stage the resolved path, the
+    executable's real path and content hash and (``versions``) an
+    adapter-specific version probe; plus the environment setup identity.
+    A tool replaced at the same path, a changed wrapper target or a changed
+    setup script all change the identity."""
+    from .eda.runner import ToolEnv, file_identity
+    env = ToolEnv(tools)
+    out: Dict = {"setup": env.setup_identity(), "tools": {}}
+    for st, t in env.tools.items():
+        r = env.which(st)
+        e: Dict = {"adapter": t.get("adapter"), "executable": t.get("executable"),
+                   "path": r.detail if r.ok else f"<{r.status}>"}
+        if r.ok:
+            e.update(file_identity(r.detail))
+            if versions:
+                e.update(env.version_probe(st))
+        out["tools"][st] = e
+    return out
+
+
+def identity_changes(old: Dict, new: Dict, versions: bool = True) -> List[str]:
+    """Human-readable differences between two tool identities."""
+    changes: List[str] = []
+    os_, ns = old.get("setup") or {}, new.get("setup") or {}
+    for k in ("setup_script", "setup_script_sha256", "path_prepend", "environment_sha256"):
+        if os_.get(k) != ns.get(k):
+            changes.append(f"environment setup: {k} changed")
+    ot, nt = old.get("tools") or {}, new.get("tools") or {}
+    for st in sorted(set(ot) | set(nt)):
+        a, b = ot.get(st), nt.get(st)
+        if a is None or b is None:
+            changes.append(f"{st}: stage {'added' if a is None else 'removed'}")
+            continue
+        for k in ("adapter", "path", "realpath", "sha256"):
+            if a.get(k) != b.get(k):
+                changes.append(f"{st}: {k} changed")
+        if versions:
+            if a.get("version") or b.get("version"):
+                if a.get("version") != b.get("version"):
+                    changes.append(f"{st}: version {a.get('version')} -> {b.get('version')}")
+            elif a.get("probe_sha256") != b.get("probe_sha256"):
+                changes.append(f"{st}: version probe output changed")
+    return changes
 
 
 def validation_key(tools: cfgmod.Loaded, tech: cfgmod.Loaded) -> str:
@@ -170,7 +216,7 @@ def save_validation(tools: cfgmod.Loaded, tech: cfgmod.Loaded, record: dict) -> 
     p.parent.mkdir(parents=True, exist_ok=True)
     rec = dict(record)
     rec.update({"tools_sha256": tools.sha256, "technology_sha256": tech.sha256,
-                "fingerprint": tool_fingerprint(tools), "validated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+                "identity": tool_identity(tools), "validated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     p.write_text(json.dumps(rec, indent=2))
     return p
 
@@ -180,7 +226,12 @@ def load_validation(tools: cfgmod.Loaded, tech: cfgmod.Loaded) -> Dict:
     if not p.is_file():
         return {"state": "not-validated"}
     rec = json.loads(p.read_text())
-    if rec.get("fingerprint") != tool_fingerprint(tools):
-        return {"state": "stale", "reason": "tool executables changed since validation", "record": str(p)}
+    if not rec.get("identity"):
+        return {"state": "stale", "reason": "validation predates tool identity checks; re-run `cedar flow-check`",
+                "record": str(p)}
+    changes = identity_changes(rec["identity"], tool_identity(tools))
+    if changes:
+        return {"state": "stale", "reason": "tools or their environment changed since validation: "
+                + "; ".join(changes), "changes": changes, "record": str(p)}
     return {"state": "validated" if rec.get("passed") else "validation-failed", "record": str(p),
             "validated_at": rec.get("validated_at"), "stages": rec.get("stages")}

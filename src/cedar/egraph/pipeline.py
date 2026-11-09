@@ -130,8 +130,9 @@ def build_program(tc: Toolchain, rules: Sequence[str], iterations: Optional[int]
 
 
 _TYPE_RE = re.compile(r"\((I(\d+))\)|\((?:Int|SInt|UInt) (\d+)\)")
+# (OpaqueType is not listed: it carries e.g. !seq.clock in every sequential design.)
 _NON_SIGNLESS_RE = re.compile(r"\((SInt|UInt|OtherInt|F16|F32|F64|F80|F128|TF32|Index|Complex|Tuple|Function|"
-                              r"Vector|RankedTensor|UnrankedTensor|OpaqueType)\b")
+                              r"Vector|RankedTensor|UnrankedTensor)\b")
 
 
 def widths_in(text: str) -> List[int]:

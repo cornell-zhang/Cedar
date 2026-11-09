@@ -37,7 +37,11 @@ across every `cedar run continue` and including the agent's work. Every
 subprocess Cedar starts (EDA tools, simulators, the compiler toolchain,
 unattended agents) runs in its own process group with its timeout capped by
 the remaining budget; on a timeout the whole group is terminated and reaped,
-and after a normal exit any leftover descendants are terminated too. When the
+and after a normal exit any leftover descendants are terminated too. In-process
+Z3 work -- rule admission, re-certification and the `circt-lec` miter solve --
+gets at most the remaining budget as its solver timeout (never 0, which Z3 would
+treat as unlimited), checks the budget before every instance, and a proof cut
+short by the budget yields no certificate or verdict. When the
 budget expires the run ends as `failed` with `expired` recorded: it cannot be
 continued (not even with `--retry`), task submissions are refused, nothing done
 under the expired budget earns successful-iteration credit, and a report

@@ -50,6 +50,31 @@ def expired() -> bool:
     return r is not None and r <= 0
 
 
+class DeadlineExpired(Exception):
+    """The run budget ran out; in-process work (Z3) must stop immediately."""
+
+
+def check() -> None:
+    if expired():
+        raise DeadlineExpired("run budget expired")
+
+
+def bounded_ms(timeout_ms: int) -> int:
+    """A Z3 timeout (ms) capped by the remaining run budget.
+
+    Never returns 0 (which Z3 treats as *no* limit): if less than 1 ms of the
+    budget remains, DeadlineExpired is raised instead.
+    """
+    ms = max(1, int(timeout_ms))
+    r = remaining()
+    if r is None:
+        return ms
+    left = int(r * 1000)
+    if left < 1:
+        raise DeadlineExpired("run budget expired")
+    return min(ms, left)
+
+
 def bounded(timeout: Optional[float]) -> Optional[float]:
     """``timeout`` capped by the remaining run budget (never below 0)."""
     r = remaining()

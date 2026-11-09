@@ -37,6 +37,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import z3
 
+from .. import proc
 from . import z3verify as zv
 
 VERIFIER_SOURCE = Path(zv.__file__)
@@ -476,6 +477,7 @@ def prove_instance(rule_name: str, rule_text: str, width: int, sigs: Dict[str, L
     """Prove ``rule_text`` at exactly ``width`` bits. Returns (certificate, instance_text)."""
     sha = rule_sha(rule_text)
     t0 = time.monotonic()
+    proc.check()                               # never start a proof after the run budget expired
 
     def cert(status: str, detail: str, inst: Optional[str] = None) -> Tuple[Certificate, Optional[str]]:
         return Certificate(
@@ -527,8 +529,11 @@ def prove_instance(rule_name: str, rule_text: str, width: int, sigs: Dict[str, L
         return cert("UNSUPPORTED", f"operand width not fixed by the match premises: {unguarded}", inst)
     try:
         status, detail = zv.verify_rule(parsed, sweep=[width], timeout_ms=timeout_ms)
+    except proc.DeadlineExpired:
+        raise                                  # no certificate for a proof cut short by the budget
     except Exception as exc:  # noqa: BLE001
         return cert("UNKNOWN", f"verifier exception {type(exc).__name__}: {exc}", inst)
+    proc.check()
     mapped = {"VALID": "PROVED", "INVALID": "REFUTED"}.get(status, "UNKNOWN")
     return cert(mapped, f"{why}; {detail}", inst)
 
@@ -857,9 +862,14 @@ def _bound_by_vec_get(sym: str, parsed, env) -> bool:
 def admit(rules: Dict[str, str], widths: Iterable[int], store: Optional[CertificateStore],
           sigs: Dict[str, List[str]], timeout_ms: int = DEFAULT_TIMEOUT_MS,
           max_width: int = DEFAULT_MAX_WIDTH) -> Admission:
-    """Admission gate for a design: certify every (rule, width) instance."""
+    """Admission gate for a design: certify every (rule, width) instance.
+
+    Every proof is capped by the run budget (``cedar.proc``); on expiry
+    ``proc.DeadlineExpired`` propagates and no further instance is started.
+    """
     adm = Admission()
     for name, text in sorted(rules.items()):
+        proc.check()
         sha = rule_sha(text)
         form, err = validate_rule_text(text)
         if form is None:
@@ -874,6 +884,7 @@ def admit(rules: Dict[str, str], widths: Iterable[int], store: Optional[Certific
         tvars, concrete = type_variables(zv.sexp_to_str(renamed), sigs)
         targets = sorted(set(widths)) if tvars else (sorted(set(concrete) - {1}) or [1])
         for w in targets:
+            proc.check()
             cached = store.get(sha, w) if store else None
             inst, _ = specialize(text, w, sigs)
             if cached is not None and inst is not None and cached.instance_sha256 == rule_sha(inst):

@@ -1,5 +1,6 @@
 #include <cctype>
 #include <chrono>
+#include "llvm/Support/CommandLine.h"
 #include "EggifyOnlyPass.h"
 
 #define DEBUG_TYPE "dialegg"
@@ -211,8 +212,20 @@ static std::string sanitizeEgglogId(llvm::StringRef in) {
     return out;
 }
 
-// Internal module bodies remain eligible for optimization.
-static bool isBlackboxLeaf(llvm::StringRef) { return false; }
+// Internal modules are optimizable unless the user explicitly makes them opaque.
+// External declarations are always opaque, regardless of their symbol names.
+static llvm::cl::list<std::string> opaqueModules(
+    "opaque-module", llvm::cl::desc("Opaque internal module symbol (requires --hierarchical; repeatable)"),
+    llvm::cl::ZeroOrMore, llvm::cl::CommaSeparated);
+
+static bool isOpaqueModule(circt::hw::HWModuleOp module) {
+    if (module->hasAttr("cedar.blackbox"))
+        return true;
+    for (const std::string& name : opaqueModules)
+        if (module.getName() == name)
+            return true;
+    return false;
+}
 
 void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
     // ONE shared Egglog instance for the whole design so op ids are globally
@@ -227,7 +240,7 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
     struct ModuleInfo {
         std::string name;                       // hw.module symbol name
         bool isPrivate = false;
-        bool isBlackbox = false;                // opaque leaf (name-pattern match)
+        bool isBlackbox = false;                // external or explicitly opaque module
         std::vector<std::string> bodyOpIds;     // print-ids of extractable body ops
         std::vector<std::string> portNames;     // input+output port names
         std::vector<mlir::Operation*> instances;// hw.instance ops in this module
@@ -238,27 +251,27 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
 
     for (mlir::Operation& op : module.getOps()) {
         auto hwModuleOp = llvm::dyn_cast<circt::hw::HWModuleOp>(&op);
-        if (!hwModuleOp) {
-            // Non-hw.module top-level ops are not part of the hierarchical
-            // module layer; skip them quietly (the flat path warns, but here
-            // we deliberately keep going so the whole design is emitted).
+        if (auto external = llvm::dyn_cast<circt::hw::HWModuleExternOp>(&op)) {
+            ModuleInfo info;
+            info.name = external.getName().str();
+            info.isBlackbox = true;
+            for (const circt::hw::PortInfo& port : external.getPortList())
+                info.portNames.push_back(port.getName().str());
+            modules.push_back(std::move(info));
             continue;
         }
+        if (!hwModuleOp)
+            continue;
 
         ModuleInfo info;
         info.name = hwModuleOp.getName().str();
         info.isPrivate = hwModuleOp.isPrivate();
-        info.isBlackbox = isBlackboxLeaf(hwModuleOp.getName());
+        info.isBlackbox = isOpaqueModule(hwModuleOp);
         llvm::SmallVector<circt::hw::PortInfo> ports = hwModuleOp.getPortList();
         for (const circt::hw::PortInfo& port : ports)
             info.portNames.push_back(port.getName().str());
 
-        // Blackbox leaves are held OPAQUE: skip eggifying their body entirely so
-        // no op-level (comb_*/seq_* / hw_output) e-nodes leak into the e-graph
-        // for them. circt-verilog hands these a trivial hw.output body; without
-        // this skip they would be classified as HwModule (op layer) instead of
-        // the opaque Submodule the task requires. We still record their ports
-        // (above) so the Submodule node carries the interface for round-trip.
+        // Preserve the interface while excluding explicitly opaque bodies.
         if (info.isBlackbox) {
             modules.push_back(std::move(info));
             continue;
@@ -266,8 +279,7 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
 
         // Eggify every block of this (non-blackbox) module into the SHARED
         // egglog. Unlike the flat path we do NOT skip private submodules --
-        // their op-level body (the booth datapath comb_*/seq_* nodes) is exactly
-        // what Q-A needs.
+        // their bodies are eligible for optimization too.
         for (mlir::Block& block : hwModuleOp.getBodyRegion().getBlocks()) {
             for (mlir::Value arg : block.getArguments())
                 egglog.eggifyValue(arg);
@@ -308,15 +320,8 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
     for (const ModuleInfo& mi : modules) {
         std::string sym = sanitizeEgglogId(mi.name);
 
-        if (mi.isBlackbox || mi.bodyOpIds.empty()) {
-            // Opaque leaf: either a name-pattern blackbox (DesignWare / RAM /
-            // std-cell / opaque_cell_* -- held opaque by design even though
-            // circt-verilog gave it a trivial body) or a genuinely body-less
-            // module. Represent it as a (Submodule name ports) e-node so the
-            // rest of the design can reference it, it survives saturation
-            // unchanged (no rule has a Submodule LHS), and it round-trips
-            // verbatim. Port names go into a StringVec so reconstruction can
-            // recover the interface.
+        if (mi.isBlackbox) {
+            // Opaque modules retain their port interfaces in the module layer.
             std::string portsVec = "(vec-of";
             if (mi.portNames.empty())
                 portsVec = "(vec-empty)";
@@ -383,6 +388,30 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
 
 void EggifyOnlyPass::runOnOperation() {
     mlir::ModuleOp module = getOperation();
+
+    if (!hierarchicalOpt && !opaqueModules.empty()) {
+        module.emitError("--opaque-module requires --hierarchical");
+        signalPassFailure();
+        return;
+    }
+    for (const std::string& name : opaqueModules) {
+        auto* target = module.lookupSymbol(name);
+        if (!target || !llvm::isa<circt::hw::HWModuleOp, circt::hw::HWModuleExternOp>(target)) {
+            module.emitError("--opaque-module does not name an HW module: ") << name;
+            signalPassFailure();
+            return;
+        }
+    }
+    for (auto internal : module.getOps<circt::hw::HWModuleOp>()) {
+        auto marker = internal->getAttr("cedar.blackbox");
+        if (!marker)
+            continue;
+        if (!hierarchicalOpt || !llvm::isa<mlir::UnitAttr>(marker)) {
+            internal.emitError("cedar.blackbox must be a unit attribute and requires --hierarchical");
+            signalPassFailure();
+            return;
+        }
+    }
 
     // Hierarchical emit is a separate, additive code path gated behind
     // --hierarchical. The flat path below remains unchanged.

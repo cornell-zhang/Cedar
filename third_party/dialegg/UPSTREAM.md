@@ -57,7 +57,20 @@ Removed from the snapshot:
 * `test/reconstruct_opaque_region_capture/` — replaced by the synthetic
   opaque-region capture regression in Cedar's `tests/test_open_flow.py`.
 
-Edited (no functional change to `egg-opt`):
+Functional changes to `egg-opt`:
+
+* Hierarchical opacity is based on external declarations or explicit user
+  configuration, rather than built-in library/design symbol patterns.
+  `hw.module.extern` declarations now supply module-level interface nodes so
+  instances can reference them. Internal modules can be kept opaque with
+  `--opaque-module=<symbol>` or the unit attribute `cedar.blackbox`.
+  Invalid opacity configuration fails with a diagnostic. These controls require
+  `--hierarchical`; ordinary flat emission is unchanged.
+  The importer applies `toolchain/patches/dialegg-opaque-modules.patch` to
+  preserve this fix across snapshot refreshes. Synthetic regressions live in
+  `tests/test_hierarchical_opacity.py`.
+
+Other edits:
 
 * `CMakeLists.txt`: the `CIRCT_SOURCE_DIR` / `CIRCT_BUILD_DIR` cache defaults
   pointed to a developer machine; they are now empty and must be passed

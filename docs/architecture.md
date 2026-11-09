@@ -42,6 +42,10 @@
    `circt-opt --lower-seq-to-sv --hw-memory-sim | --export-verilog` -> Verilog,
    which must re-parse with `circt-verilog`.
 
+The separate low-level hierarchical exporter supports explicit opaque module
+boundaries; see [hierarchical opacity](hierarchical-opacity.md) for its CLI
+options and MLIR annotation.
+
 ## Rule admission (`cedar.rules.certify`)
 
 Rules are quarantined text. First the *entire executable content* is

@@ -160,6 +160,13 @@ def _edit_dialegg(root: Path) -> None:
         ))
     _normalize_development_notes(root)
 
+    # Preserve Cedar's functional fixes when refreshing the pinned snapshot.
+    subprocess.run([
+        "git", "apply", "--no-index", "--unsafe-paths", "-p3",
+        "--directory=" + str(root.resolve()),
+        str(REPO_ROOT / "toolchain/patches/dialegg-opaque-modules.patch"),
+    ], check=True)
+
     for rel in _HEADER_NORMALIZATION_FILES:
         f = root / rel
         if f.is_file():

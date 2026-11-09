@@ -18,7 +18,8 @@ environment:
   env_required: [LM_LICENSE_FILE]      # names only; checked, never recorded
 execution:
   nice: 10
-  threads: 4
+  threads: 4                           # per tool invocation
+  max_parallel: 2                      # candidates measured/verified concurrently (licenses!)
 tools:
   synthesis:   {adapter: synopsys-dc,        executable: dc_shell,  timeout_s: 1800}
   place_route: {adapter: cadence-innovus,    executable: innovus,   timeout_s: 3600}

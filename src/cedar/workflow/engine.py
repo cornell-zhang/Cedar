@@ -539,7 +539,7 @@ class Run:
                 r = flow.synthesize(self.ctx, c["rtl"], self.dir / "measure" / name / "synth-preview")
                 syn = {q: m.value for q, m in flow.synth_metrics(self.ctx, r).items()}
             return name, v, syn
-        with cf.ThreadPoolExecutor(max_workers=max(1, len(names))) as ex:
+        with cf.ThreadPoolExecutor(max_workers=max(1, min(len(names), self.tenv.max_parallel))) as ex:
             for name, v, syn in ex.map(work, names):
                 c = self.s["candidates"][name]
                 c["verification"] = v
@@ -970,7 +970,7 @@ class Run:
         if not pending:
             return
         self.log(f"measuring {pending} (parallel)")
-        with cf.ThreadPoolExecutor(max_workers=len(pending)) as ex:
+        with cf.ThreadPoolExecutor(max_workers=max(1, min(len(pending), self.tenv.max_parallel))) as ex:
             futs = {ex.submit(self._measure, n, self.s["candidates"][n]["rtl"]): n for n in pending}
             for f in cf.as_completed(futs):
                 n = futs[f]

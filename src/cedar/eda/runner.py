@@ -55,6 +55,7 @@ class ToolEnv:
         ex = d.get("execution") or {}
         self.nice = int(ex.get("nice", 10))
         self.threads = int(ex.get("threads", 4))
+        self.max_parallel = int(ex.get("max_parallel", 2))
         self.tools: Dict[str, dict] = {k: v for k, v in (d.get("tools") or {}).items() if v}
 
     def configured(self, stage: str) -> bool:

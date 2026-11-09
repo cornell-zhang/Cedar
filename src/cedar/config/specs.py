@@ -46,6 +46,8 @@ TOOL_PROFILE = {
     "execution": F("obj", fields={
         "nice": F("int", min=0, max=19, default=10, doc="niceness for EDA processes"),
         "threads": F("int", min=1, max=256, default=4, doc="max threads per EDA tool"),
+        "max_parallel": F("int", min=1, max=64, default=2,
+                          doc="max candidates measured concurrently (each holds its own tool licenses)"),
         "scratch_dir": F("path", must_exist=False, doc="default work dir root for runs"),
     }),
     "tools": F("obj", required=True, fields={

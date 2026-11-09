@@ -53,9 +53,9 @@ lef:
   cells: [${PDK}/lef/cells.lef]
 synthesis:
   compile_command: compile -map_effort high -area_effort high -no_design_rule -power_effort high
-  max_transition: 50.0                 # library time units
-  input_transition_max: 60.0
-  input_transition_min: 20.0
+  max_transition: 50.0                 # library time units (default: 0.050 ns converted)
+  input_transition_max: 60.0           # default 0.060 ns
+  input_transition_min: 20.0           # default 0.020 ns
   dont_use: []
   pre_compile_hook: hooks/pre_compile.tcl     # optional Tcl, sourced by DC
 place_route:
@@ -118,6 +118,8 @@ Validation rules beyond the schema:
 * more than one clock requires a user `sdc`;
 * `verification.mode: simulation` requires a self-checking testbench that is
   different from the activity testbench;
+* `defines` and `include_dirs` are applied to every tool (frontend, DC,
+  Conformal via Verilog command files, checking simulation);
 * an objective preset or explicit weights is required; weights are finite,
   non-negative, and at least one is positive; a positive power weight requires
   `measurement.mode: full-ppa`.

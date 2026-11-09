@@ -78,6 +78,19 @@ Innovus 72-111 s, activity simulation 5-6 s, PrimeTime 10-11 s, Conformal
 ~30 s. The quick test meets the initial <= 10 min target; most of the time is
 P&R and the two agent tasks.
 
+## Independent code review
+
+An independent review of the package before the final runs found, among
+others, two certifier soundness holes (rewrite forms bypassing the vector-arity
+guard; operand widths only fixed by the right-hand side) and several fail-open
+paths (pending stop decisions skipped on resume, incomplete measurements
+counted as accepted, defines/include dirs missing from verification). All were
+fixed with regression tests before the final runs. Separately, run-to-run
+differences in extraction were traced to nondeterministic hashing in
+extraction-gym and fixed (see `third_party/extraction-gym/UPSTREAM.md`); the
+toolchain was rebuilt from scratch afterwards (container build: LLVM 657 s,
+CIRCT 196 s).
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.

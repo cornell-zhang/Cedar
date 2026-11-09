@@ -14,7 +14,9 @@ All toolchain builds consume `toolchain/sources.lock.json`:
 
 The egglog fork matters: DialEgg's passes and Cedar's templates require it;
 mainline egglog >= 0.4 is not compatible. No patches are applied to CIRCT,
-LLVM or egglog. `python3 toolchain/scripts/lock.py check` validates the lockfile.
+LLVM or egglog. The imported DialEgg and extraction-gym snapshots carry the
+Cedar changes listed in their `UPSTREAM.md` (for extraction-gym: deterministic
+hashing so extraction ties are broken reproducibly). `python3 toolchain/scripts/lock.py check` validates the lockfile.
 
 ## Native build
 

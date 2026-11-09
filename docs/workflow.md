@@ -15,7 +15,9 @@ task file. After writing the outputs the agent runs
 validated: Verilog must parse and keep the original port list, rule files must
 contain exactly one rule, JSON must parse) and `cedar run continue --run <run>`.
 `cedar run status --run <run>` shows the phase, pending task, candidates and
-timings. An optional unattended adapter (`--agent-cmd "claude -p ..."` or
+timings. A run reads the original RTL files; resuming refuses if the design,
+tool or technology spec or any original RTL file changed since the run
+started, and a run directory is locked while a process advances it. An optional unattended adapter (`--agent-cmd "claude -p ..."` or
 `"codex exec ..."`) executes tasks in batch mode instead.
 
 ## Phases

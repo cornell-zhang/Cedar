@@ -413,12 +413,12 @@ def test_run_expiring_during_rule_admission_fails(tmp_path, toolchain, monkeypat
 def _slow_frontend_prefix(tmp_path, toolchain, body):
     """A toolchain prefix whose circt-verilog runs `body` first (real tool after)."""
     import shlex
-    if toolchain.bin_dir.name != "bin":
-        pytest.skip("needs a prefix toolchain to wrap circt-verilog")
+
     from cedar.toolchain import resolve
-    prefix = tmp_path / "slow-prefix"
+    prefix = tmp_path / "slow-prefix"                 # works for a prefix and for the wheel toolchain
     (prefix / "bin").mkdir(parents=True)
-    (prefix / "share").symlink_to(toolchain.share_dir.parent)
+    (prefix / "share").mkdir()
+    (prefix / "share" / "cedar").symlink_to(toolchain.share_dir)
     for p in toolchain.bin_dir.iterdir():
         if p.name != "circt-verilog":
             (prefix / "bin" / p.name).symlink_to(p)

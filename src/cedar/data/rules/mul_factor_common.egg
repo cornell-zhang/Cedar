@@ -1,0 +1,20 @@
+; SPDX-License-Identifier: Apache-2.0
+; Factor a common left multiplicand out of a binary sum of binary products:
+;   a*b + a*c  ==>  a*(b + c)
+; Valid for every input in modular (two's complement) arithmetic of any fixed
+; width, because multiplication distributes over addition modulo 2^w.
+; Removes one multiplier. Binary-arity guards keep n-ary operands intact.
+(rule
+    ((= ?lhs (comb_add ?m1 ?ops ?t))
+     (= 1 (vec-length ?ops))
+     (= ?m2 (vec-get ?ops 0))
+     (= ?m1 (comb_mul ?a ?bops ?t))
+     (= 1 (vec-length ?bops))
+     (= ?b (vec-get ?bops 0))
+     (= ?m2 (comb_mul ?a ?cops ?t))
+     (= 1 (vec-length ?cops))
+     (= ?c (vec-get ?cops 0)))
+    ((let s (comb_add ?b (vec-push (vec-empty) ?c) ?t))
+     (let m (comb_mul ?a (vec-push (vec-empty) s) ?t))
+     (union ?lhs m))
+    :ruleset rules)

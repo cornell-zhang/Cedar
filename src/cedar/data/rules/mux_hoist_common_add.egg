@@ -1,0 +1,17 @@
+; SPDX-License-Identifier: Apache-2.0
+; Share an adder across a multiplexer with a common left operand:
+;   s ? (a+b) : (a+c)  ==>  a + (s ? b : c)
+; Holds for every select value and every input (both sides select the same
+; sum). Replaces two adders by one adder and a narrower mux.
+(rule
+    ((= ?lhs (comb_mux ?s ?x ?y ?t))
+     (= ?x (comb_add ?a ?xops ?t))
+     (= 1 (vec-length ?xops))
+     (= ?b (vec-get ?xops 0))
+     (= ?y (comb_add ?a ?yops ?t))
+     (= 1 (vec-length ?yops))
+     (= ?c (vec-get ?yops 0)))
+    ((let m (comb_mux ?s ?b ?c ?t))
+     (let r (comb_add ?a (vec-push (vec-empty) m) ?t))
+     (union ?lhs r))
+    :ruleset rules)

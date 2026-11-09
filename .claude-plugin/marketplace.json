@@ -1,0 +1,12 @@
+{
+  "name": "cedar",
+  "owner": {"name": "Cedar contributors"},
+  "description": "Cedar: agent-guided, proof-gated RTL PPA optimization skills for Claude Code.",
+  "plugins": [
+    {
+      "name": "cedar",
+      "source": "./",
+      "description": "Cedar RTL PPA optimization skills (cedar, cedar-setup, cedar-doctor)."
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+---
+name: cedar
+description: Optimize an RTL design's area/delay/power with Cedar (direct rewrites, Z3-proved egglog rules, equality saturation, weighted extraction, equivalence checking, measured PPA frontier). Use when the user asks to optimize, explore or improve PPA of a Verilog/SystemVerilog design with Cedar.
+---
+
+# Cedar optimization workflow (agent-driven)
+
+You are the reasoning agent of a Cedar run. The `cedar` Python CLI does all
+compilation, proofs, verification, measurement and bookkeeping; you only do the
+creative tasks it hands you. Never edit run state (`run.json`), never fabricate
+results, and never skip a gate.
+
+## 0. Preconditions
+- `cedar --version` must work (install: `pip install cedar-workflow cedar-toolchain`,
+  or an editable checkout). If not, stop and tell the user.
+- A design spec (`cedar/design@1` YAML) with an explicit timing goal is required.
+  If the user has none, use the `cedar-setup` skill (`cedar design init ...`). Never
+  choose the clock period yourself and never run a frequency sweep — ask the user.
+- Run `cedar doctor --profile <tools> --technology <tech> --design <design.yaml>`.
+  Every stage required by the measurement mode must be `available`; otherwise stop
+  and report what is missing (do not downgrade the measurement silently).
+- Outputs must go to a work directory OUTSIDE the source repository (ask the user
+  or use their configured scratch directory).
+
+## 1. Start
+```
+cedar run start --design <design.yaml> --work-dir <dir> \
+    [--profile <tools>] [--technology <tech>] [--preset quick|paper] \
+    --agent <claude|codex> --model <your model id>
+```
+The command runs deterministic phases and stops with exit code 3 when a task needs
+you, printing the task file. `cedar run status --run <run>` shows progress.
+
+## 2. Task loop
+Repeat until the run is `completed` or `incomplete` (or fails):
+1. Read the task file printed by the CLI (`cedar task show --run <run>` reprints it).
+2. Produce exactly the requested output files at the given absolute paths.
+3. `cedar task submit --run <run> <task-id> --agent <claude|codex> --model <model>`.
+   If REJECTED, read the reason, fix the outputs, and submit again.
+4. `cedar run continue --run <run>`.
+
+Task kinds and what matters:
+- **direct_rewrite** — rewrite RTL to improve the stated weighted objective. Keep the
+  module name and every port identical, keep cycle behaviour (same registers, reset
+  values, latency; no pipelining/retiming unless the spec allows it). Explain each
+  variant in `notes.json`. Candidates are checked against the original RTL
+  (Conformal / self-checking simulation / circt-lec) and failing ones are discarded.
+- **propose_rules** — write general egglog rules (one `rule` with one `union` per
+  file) generalizing the verified direct rewrites. Use a single type variable for
+  the width; guard every variadic operand vector you read with
+  `(= N (vec-length ?ops))`; no stateful ops. Cedar proves each rule with Z3 at
+  every exact width it is applied to and rejects anything unproved.
+- **select_rules** (paper preset) — choose a complementary rule combination and
+  optional per-constructor cost multipliers in [0.05, 20] as JSON.
+- **extraction_fallback** — reconstruct Verilog from the extracted e-graph term when
+  CIRCT reconstruction failed; it is verified like any other candidate.
+- **stop_decision** (paper preset) — decide STOP/CONTINUE from the frontier history.
+
+## 3. Report
+Read `<run>/report.json` and tell the user, precisely:
+- the timing goal, objective weights, measurement stages and units;
+- the verified frontier (baseline/direct/extracted points with area um2, delay ns,
+  power uW) and which candidates were excluded and why;
+- rule admission results (which agent rules were proved/rejected);
+- the execution-contract status (`quick` is a bounded smoke mode, not the paper's
+  exploration setting) and per-phase timings;
+- anything unavailable or failed. Do not claim improvements that the report does
+  not show.

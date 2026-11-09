@@ -1,0 +1,10 @@
+; SPDX-License-Identifier: Apache-2.0
+; Commutativity of binary multiplication: a*b ==> b*a (exact for any width).
+; Lets factoring rules match products whose shared operand is on the right.
+(rule
+    ((= ?lhs (comb_mul ?a ?ops ?t))
+     (= 1 (vec-length ?ops))
+     (= ?b (vec-get ?ops 0)))
+    ((let m (comb_mul ?b (vec-push (vec-empty) ?a) ?t))
+     (union ?lhs m))
+    :ruleset rules)

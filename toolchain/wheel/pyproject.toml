@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0
+# cedar-toolchain: prebuilt Cedar compiler toolchain (Linux x86-64, manylinux_2_28).
+# Built by toolchain/wheel/build_wheel.sh from the sources pinned in
+# toolchain/sources.lock.json; do not run `python -m build` here directly
+# without first populating cedar_toolchain/_bin, _share and _licenses.
+[build-system]
+requires = ["setuptools>=77", "wheel>=0.40"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cedar-toolchain"
+version = "0.1.0"
+description = "Prebuilt CIRCT, DialEgg (egg-opt), egglog and extraction-gym binaries plus matching templates for Cedar"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND MIT"
+classifiers = [
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
+
+[project.scripts]
+cedar-toolchain = "cedar_toolchain.cli:main"
+
+[tool.setuptools]
+include-package-data = false
+packages = ["cedar_toolchain"]
+
+[tool.setuptools.package-data]
+cedar_toolchain = ["_bin/*", "_share/*", "_licenses/*", "cedar-toolchain-manifest.json"]

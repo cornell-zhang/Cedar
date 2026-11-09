@@ -1,0 +1,11 @@
+{
+  "name": "cedar",
+  "version": "0.1.0",
+  "description": "Cedar RTL PPA optimization: agent-driven direct rewrites and rule discovery with Z3-proved equality saturation, equivalence checking and measured PPA frontiers.",
+  "author": {"name": "Cedar contributors"},
+  "homepage": "https://github.com/cornell-zhang/Cedar",
+  "repository": "https://github.com/cornell-zhang/Cedar",
+  "license": "Apache-2.0",
+  "keywords": ["eda", "rtl", "e-graph", "equality-saturation", "ppa"],
+  "skills": "./skills/"
+}

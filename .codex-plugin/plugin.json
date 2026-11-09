@@ -1,0 +1,24 @@
+{
+  "name": "cedar",
+  "version": "0.1.0",
+  "description": "Cedar RTL PPA optimization skills (cedar, cedar-setup, cedar-doctor).",
+  "author": {"name": "Cedar contributors", "url": "https://github.com/cornell-zhang/Cedar"},
+  "homepage": "https://github.com/cornell-zhang/Cedar",
+  "repository": "https://github.com/cornell-zhang/Cedar",
+  "license": "Apache-2.0",
+  "keywords": ["eda", "rtl", "e-graph", "ppa"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Cedar",
+    "shortDescription": "Agent-guided, proof-gated RTL PPA optimization",
+    "longDescription": "Cedar optimizes RTL area/delay/power with agent-proposed direct rewrites and rewrite rules, Z3-proved exact-width rule admission, equality saturation with weighted extraction, equivalence checking and measured PPA from user-supplied EDA tools.",
+    "developerName": "Cedar contributors",
+    "category": "Developer Tools",
+    "capabilities": [],
+    "defaultPrompt": [
+      "Set up Cedar for my EDA tools and technology.",
+      "Run cedar doctor and explain what is missing.",
+      "Optimize this design's power with Cedar using my design spec."
+    ]
+  }
+}

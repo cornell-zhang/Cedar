@@ -7,8 +7,7 @@
 ;; blackbox submodules) live in the SAME e-graph as the op-level `comb_*` /
 ;; `seq_*` nodes, so a rewrite can bind both layers (cross-layer rewrites).
 ;;
-;; Reconstructed from implementation's feasibility verdict (Q2 datatype sketch +
-;; PoC `as-op` bridge):
+;; Module datatype sketch with an `as-op` bridge:
 ;;   (datatype Module
 ;;     (HwModule String <body>)     ; a module def (name + op-level body vec)
 ;;     (Instance String Module ...) ; an instantiation, binds a submodule
@@ -40,6 +39,5 @@
 
 ;; Bridge from the Module layer into the Op layer: lifts a Module instance to
 ;; where an Op is expected, so a cross-layer rewrite can union an Instance with
-;; the op-level expression it is equivalent to (instance inlining). Matches the
-;; implementation PoC's `(function as-op (Module) Op)` minimal Submodule lift.
+;; the op-level expression it is equivalent to (instance inlining).
 (function as-op (Module) Op)

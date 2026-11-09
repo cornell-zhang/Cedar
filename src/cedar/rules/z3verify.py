@@ -69,7 +69,7 @@ BANNED_PHRASES: Tuple[str, ...] = (
     "in this context",
 )
 
-# Default bitwidth sweep — implementation pins {1, 64} as the baseline.
+# Default bitwidth sweep uses {1, 64} as the baseline.
 DEFAULT_SWEEP: Tuple[int, ...] = (1, 64)
 
 # Sweep ceiling — Z3 bitvector solving gets sluggish above ~64 bits when

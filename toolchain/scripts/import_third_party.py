@@ -83,6 +83,67 @@ _HEADER_NORMALIZATION_FILES = [
 _ABS_DEV_PATH = r"(/[A-Za-z0-9_.-]+){2,}"
 
 
+def _normalize_development_notes(root: Path) -> None:
+    """Keep technical explanations without development-tracker annotations."""
+    for f in root.rglob("*"):
+        if not f.is_file() or f.suffix not in {".cpp", ".h", ".mlir"}:
+            continue
+        text = f.read_text()
+        text = re.sub(
+            r"^// Issue:? [^\s]+/[^\s/#]+#\d+[^\n]*$",
+            lambda m: "// Regression: " + m[0].split(" — ", 1)[1]
+            if " — " in m[0] else "",
+            text, flags=re.M,
+        )
+        text = re.sub(r"Regression: sub-cluster [A-Z]+[']* / ", "Regression: ", text)
+        text = re.sub(r"^// Extensions for [^\n]+ issue #\d+:$",
+                      "// Supported extensions:", text, flags=re.M)
+        text = re.sub(
+            r"\n  // \([^\n]+/[^\s/#]+#\d+\)\. detectObservedClock",
+            ". detectObservedClock", text,
+        )
+        text = re.sub(
+            r"^// accumulator leaf cf.br bb-arg type mismatch \([^\n]+ ticket\n// [^\n]+\)\.$",
+            "// accumulator leaf cf.br bb-arg type mismatch.", text, flags=re.M,
+        )
+        text = re.sub(r"\s*\((?:sub-cluster [^)]* / )?issue #\d+[^)]*\)", "", text,
+                      flags=re.I)
+        text = re.sub(
+            r"\bIssue #\d+(?: sub-cluster [A-Z]+[']*)? \(([^)]+)\):",
+            lambda m: m[1].capitalize() + ":", text,
+        )
+        text = re.sub(r"\bIssue #\d+(?: sub-cluster [A-Z]+[']*)?:\s*", "", text)
+        text = re.sub(r"\(issue #\d+ sub-cluster\n// [^)]*\)", "", text)
+        text = re.sub(r"History: under issue #\d+", "Previously", text)
+        text = re.sub(r"Under issue #\d+ the pass", "The pass", text)
+        text = re.sub(r" called out in issue #\d+", "", text)
+        text = re.sub(
+            r"(// the op layer as HwModule nodes\.) Per researcher [^\n]+\n// correct mechanism",
+            r"\1 The\n// correct mechanism", text,
+        )
+        text = re.sub(
+            r"// The patterns mirror[^\n]+ Adding a name here",
+            "// Adding a name here", text,
+        )
+        text = re.sub(
+            r"(// --hierarchical\.) The flat path below is left byte-for-byte unchanged so\n[ \t]*// [^\n]+",
+            r"\1 The flat path below remains unchanged.", text,
+        )
+        text = re.sub(r"the hierarchical flow \(task [^)]+\):", "the hierarchical flow:", text)
+        text = text.replace(
+            "// These are the `RAM` / `register` reset/init loops. The forward-merge matcher correctly classifies ^H as a genuine",
+            "// These are the `RAM` / `register` reset/init loops. The forward-merge\n"
+            "// matcher correctly classifies ^H as a genuine",
+        ).replace(
+            "  // off-by-one that corrupts the whole accumulator round-trip. detectObservedClock returns null for the",
+            "  // off-by-one that corrupts the whole accumulator round-trip.\n"
+            "  // detectObservedClock returns null for the",
+        ).replace("// fully unroll any", "// Fully unroll any").replace(
+            "// a clocked FSM whose", "// A clocked FSM whose",
+        )
+        f.write_text(text)
+
+
 def _edit_dialegg(root: Path) -> None:
     demo = root / "test/anywidth_int/run_extract_translate.sh"
     demo.write_text(re.sub(
@@ -95,11 +156,7 @@ def _edit_dialegg(root: Path) -> None:
         f.write_text(re.sub(
             r"^[A-Z]+_REWRITE_RULES$", "CEDAR_REWRITE_RULES", f.read_text(), flags=re.M,
         ))
-    regression = root / "test/reconstruct_opaque_region_capture/accumulator_opaque_capture_cfbr_test.mlir"
-    regression.write_text(re.sub(
-        r"^(// accumulator leaf cf.br bb-arg type mismatch \(compiler-source, )[A-Z]+ ticket$",
-        r"\1CEDAR ticket", regression.read_text(), flags=re.M,
-    ))
+    _normalize_development_notes(root)
 
     for rel in _HEADER_NORMALIZATION_FILES:
         f = root / rel

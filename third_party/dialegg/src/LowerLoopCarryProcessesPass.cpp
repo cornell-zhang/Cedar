@@ -1172,7 +1172,8 @@ static bool tryLowerProcess(llhd::ProcessOp processOp, hw::HWModuleOp module,
   // module-global clock (the old `findExistingClock(module)` test) wrongly
   // registered that combinational process, inserting a phantom flop that
   // shifted every downstream sample by one cycle — a rule-independent
-  // off-by-one that corrupts the whole accumulator round-trip. detectObservedClock returns null for the
+  // off-by-one that corrupts the whole accumulator round-trip.
+  // detectObservedClock returns null for the
   // genuinely combinational `always @(*)` shape (mux3_fsm, accumulator i_sat_bits)
   // and for delay-waits, so those keep their combinational binding; it
   // returns the observed clock for a real posedge-clk FSM (multi_booth_8bit,

@@ -1,6 +1,6 @@
 # DialEgg (Cedar snapshot) — provenance
 
-This directory is a source snapshot of the Cedar/CIRCT fork of DialEgg. It is
+This directory is a source snapshot of the Cedar/CIRCT version of DialEgg. It is
 built by Cedar's toolchain scripts into the `egg-opt` binary. No Git history
 was imported.
 
@@ -13,19 +13,19 @@ was imported.
 | Original author | Abd-El-Aziz Zayed (with Christophe Dubach, McGill University) |
 | License | Apache License 2.0 — see [`LICENSE.txt`](LICENSE.txt) (unchanged) |
 | Paper | A. Zayed and C. Dubach, *DialEgg: Dialect-Agnostic MLIR Optimizer using Equality Saturation with Egglog*, CGO 2025 |
-| Last upstream commit contained in the fork | `6cddd7b9dfb4af61fe5fbd3aca9d9dc92d9dfcd9` ("Stablehlo benchmarks (#5)", 2025-07-17) |
+| Last upstream commit contained in the snapshot | `6cddd7b9dfb4af61fe5fbd3aca9d9dc92d9dfcd9` ("Stablehlo benchmarks (#5)", 2025-07-17) |
 
-## Immediate source (fork) and import revision
+## Snapshot revision
 
 | Field | Value |
 | --- | --- |
 | Imported revision | `cc8fdafd07e0faae3545b48ca04b90a9a9c37256` (2026-06-18, "fix(eggify/reconstruct): register opaque-op region captures as users ...") |
-| Commits in fork after upstream merge-base | 80 |
-| Uncommitted changes in the fork at import time | none (the revision equals the fork's `main`, and is the exact revision built into the `cedar-toolchain` 2.8.0 reference wheel) |
+| Commits after upstream merge-base | 80 |
+| Uncommitted changes at import time | none; this revision was built into the `cedar-toolchain` 2.8.0 reference wheel |
 
-## Cedar-specific changes contained in the fork revision
+## Cedar-specific changes contained in the snapshot
 
-Relative to upstream `6cddd7b`, the fork adds CIRCT support used by Cedar:
+Relative to upstream `6cddd7b`, the snapshot adds CIRCT support used by Cedar:
 
 * CIRCT dialect linkage in `CMakeLists.txt` (links every CIRCT dialect so
   `egg-opt` can parse `hw`/`comb`/`seq`/`llhd`/... MLIR).
@@ -45,7 +45,7 @@ Relative to upstream `6cddd7b`, the fork adds CIRCT support used by Cedar:
 ## Changes made while importing into Cedar
 
 The import is reproducible with
-`python3 toolchain/scripts/import_third_party.py dialegg <fork-checkout> cc8fdafd07e0faae3545b48ca04b90a9a9c37256`.
+`python3 toolchain/scripts/import_third_party.py dialegg <source-checkout> cc8fdafd07e0faae3545b48ca04b90a9a9c37256`.
 
 Removed from the snapshot:
 
@@ -77,7 +77,7 @@ it invokes the pinned `egglog` (`saulshanabrook/egg-smol` revision) binary.
 
 ## Updating this snapshot
 
-1. Check out the new fork revision locally (read-only).
+1. Check out the new source revision locally (read-only).
 2. Re-run the import script above with the new revision; review the diff
    (`git diff third_party/dialegg`) for credentials, internal material, large
    generated files and absolute paths.

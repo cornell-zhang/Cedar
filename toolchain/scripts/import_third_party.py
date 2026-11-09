@@ -66,7 +66,9 @@ _PATH_EXPORT_FILES = [
     "test/replacement/run_eqsat.sh",
 ]
 
-_ABS_DEV_PATH = r"(/work/global|/home/)"
+# An `export PATH=` assignment whose value starts with an absolute directory
+# (a developer machine path) rather than an environment variable.
+_ABS_DEV_PATH = r"(/[A-Za-z0-9_.-]+){2,}"
 
 
 def _edit_dialegg(root: Path) -> None:
@@ -95,20 +97,20 @@ def _edit_dialegg(root: Path) -> None:
             continue
         s = f.read_text()
         s2 = re.sub(
-            r"^([ \t]*)export PATH=.*" + _ABS_DEV_PATH + r".*$",
+            r"^([ \t]*)export PATH=[\"']?" + _ABS_DEV_PATH + r".*$",
             r"\1# Cedar import: put egg-opt, egglog, circt-* and extract_result on PATH via\n"
             r"\1# DIALEGG_TOOLS_PATH (previously a hard-coded developer path).\n"
             r'\1export PATH="${DIALEGG_TOOLS_PATH:+$DIALEGG_TOOLS_PATH:}$PATH"',
             s,
             flags=re.M,
         )
-        s2 = re.sub(r"/work/global/[^ ]*/build-release/egg-opt", "egg-opt", s2)
+        s2 = re.sub(r"(/[A-Za-z0-9_.-]+)+/build-release/egg-opt", "egg-opt", s2)
         f.write_text(s2)
 
     for rel in ["test/vec_of_rule/COST_TUNING_SUMMARY.md", "test/vec_of_rule/README.md"]:
         f = root / rel
         if f.exists():
-            f.write_text(re.sub(r"/work/global/[^/]+/dialegg/", "<dialegg>/", f.read_text()))
+            f.write_text(re.sub(r"(/[A-Za-z0-9_.-]+){2,}/dialegg/", "<dialegg>/", f.read_text()))
 
 
 def _edit_extraction_gym(root: Path) -> None:

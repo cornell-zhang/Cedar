@@ -117,6 +117,7 @@ Cedar does not search for a clock frequency: the timing goal is always yours.
 * [`docs/building.md`](docs/building.md) — native, container and wheel builds; source bundle
 * [`docs/paper-to-code.md`](docs/paper-to-code.md) — how each method claim maps to code and tests
 * [`docs/troubleshooting.md`](docs/troubleshooting.md)
+* [`docs/validation.md`](docs/validation.md) — what was tested for this release
 
 Archived experimental evidence for the paper lives in the separate artifact
 repository [`iccad26-cedar-artifacts`](https://github.com/zzzDavid/iccad26-cedar-artifacts)

@@ -73,3 +73,24 @@ def test_seed_library_proves(template_sigs):
     adm = C.admit(rules, [1, 8, 16], None, template_sigs)
     assert not adm.rejected, adm.summary()
     assert len(adm.admitted) == 3 * len(rules)
+
+
+def test_vector_read_in_action_counts_for_guard(template_sigs):
+    # Agent-proposed rule from a regression run: the operand vector is guarded in
+    # the premises and read (vec-get) only in the action.
+    rule = """(rule ((= ?m (comb_mux ?s (comb_mul ?a ?ops ?t) ?z ?t))
+       (= ?z (hw_constant (NamedAttr "value" (IntegerAttr 0 ?t)) ?t))
+       (= 1 (vec-length ?ops)))
+      ((union ?m (comb_mul (comb_mux ?s ?a ?z ?t) (vec-push (vec-empty) (vec-get ?ops 0)) ?t)))
+      :ruleset rules)"""
+    for w in (1, 8):
+        c, _ = C.prove_instance("mux_mul_gate", rule, w, template_sigs)
+        assert c.status == "PROVED", c.detail
+    # At 16 bits Z3 does not finish within the budget: the instance is UNKNOWN
+    # and therefore not admitted (no inference from the 8-bit proof).
+    c16, _ = C.prove_instance("mux_mul_gate", rule, 16, template_sigs, timeout_ms=2000)
+    assert c16.status == "UNKNOWN" and not c16.admitted
+    wrong = rule.replace("(IntegerAttr 0 ?t)", "(IntegerAttr 1 ?t)")
+    assert C.prove_instance("wrong", wrong, 8, template_sigs)[0].status == "REFUTED"
+    unguarded = rule.replace("(= 1 (vec-length ?ops))", "")
+    assert C.prove_instance("ung", unguarded, 8, template_sigs)[0].status == "UNSUPPORTED"

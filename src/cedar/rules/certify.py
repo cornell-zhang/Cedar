@@ -315,6 +315,9 @@ def _unguarded_vectors(rule_text: str, sigs: Dict[str, List[str]]) -> List[str]:
                         vecs.add(e[i + 1])
             if e[0] == "vec-get" and len(e) == 3 and isinstance(e[1], str) and isinstance(e[2], int):
                 max_idx[e[1]] = max(max_idx.get(e[1], -1), e[2])
+    # Element reads count wherever they occur (premises or actions); length
+    # guards only count as premises.
+    _walk(rule[2] if isinstance(rule[2], list) else [], visit)
     for p in premises:
         _walk(p, visit)
         if isinstance(p, list) and len(p) == 3 and p[0] == "=":

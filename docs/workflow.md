@@ -16,9 +16,13 @@ validated: Verilog must parse and keep the original port list, rule files must
 contain exactly one rule, JSON must parse) and `cedar run continue --run <run>`.
 `cedar run status --run <run>` shows the phase, pending task, candidates and
 timings; `cedar run wait --run <run>` blocks until a task is pending (exit 3),
-the run finished (0) or failed (1). A run reads the original RTL files; resuming refuses if the design,
-tool or technology spec or any original RTL file changed since the run
-started, and a run directory is locked while a process advances it. An optional unattended adapter (`--agent-cmd "claude -p ..."` or
+the run finished (0) or failed (1). A run reads the original RTL files; at creation it fingerprints every input
+that can change behaviour or constraints (RTL and every transitively
+`` `include``d header, user SDC, activity and checking testbenches and their
+includes, Tcl hooks, the tool setup script; size+mtime of library/LEF/RC files)
+and resuming refuses if any of them, the design/tool/technology specs, or the
+recomputed constraints id changed. A run directory is locked while a process
+advances it. An optional unattended adapter (`--agent-cmd "claude -p ..."` or
 `"codex exec ..."`) executes tasks in batch mode instead.
 
 ## Phases
@@ -58,7 +62,14 @@ correctness evidence.
 | stop decision | budget | agent task after `stall_window` = 5 unchanged frontiers |
 
 `quick` keeps every correctness gate and every measurement stage; it only
-bounds the search. The report's `execution_contract` states whether the
+bounds the search. An iteration counts as *successful* (for budgets, diversity,
+stagnation and the contract) only if its candidate passed verification **and**
+was completely and comparably measured (all stages ok, every required metric
+valid, same constraints/measurement mode/stages as the baseline). A run whose
+iterations all failed measurement ends `incomplete`, with per-iteration reasons
+in `report.json` (`iteration_outcomes`). Every EDA stage deletes the outputs of
+earlier attempts before it runs, and an equivalence result is `passed` only if
+the tool process succeeded and wrote fresh evidence. The report's `execution_contract` states whether the
 preset's minimums were met (`met`) or not (`incomplete`, with reasons); a run
 that ends at `max_iterations` without meeting them is reported as incomplete.
 

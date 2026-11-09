@@ -2,6 +2,7 @@
 """Runs refuse to start when a required capability is missing (no silent downgrade)."""
 from pathlib import Path
 
+import pytest
 import yaml
 
 from cedar.workflow.engine import Run
@@ -93,3 +94,35 @@ def test_unbound_clock_port_fails_closed(tmp_path, toolchain, monkeypatch):
     run = Run.create(str(d), str(tmp_path / "runs"), toolchain_prefix=sel)
     assert run.advance() == "failed"
     assert "core_clk" in run.s["error"] and "clk" in run.s["error"]
+
+
+def _resume_setup(tmp_path):
+    d = _setup(tmp_path, with_equivalence=True)
+    (tmp_path / "defs.vh").write_text("`define INC 4'd1\n")
+    (tmp_path / "m.v").write_text('`include "defs.vh"\n' + RTL.replace("a + 4'd1", "a + `INC"))
+    (tmp_path / "goal.sdc").write_text("create_clock -name clk -period 1 [get_ports clk]\n")
+    doc = yaml.safe_load(d.read_text())
+    doc["sdc"] = "goal.sdc"
+    d.write_text(yaml.safe_dump(doc))
+    return d
+
+
+@pytest.mark.parametrize("edit", ["sdc", "header"])
+def test_resume_rejects_changed_sdc_or_header(tmp_path, toolchain, monkeypatch, edit):
+    from cedar.workflow.engine import WorkflowError
+    monkeypatch.setenv("CEDAR_STATE_HOME", str(tmp_path / "state"))
+    sel = str(toolchain.bin_dir.parent) if toolchain.bin_dir.name == "bin" else None
+    run = Run.create(str(_resume_setup(tmp_path)), str(tmp_path / "runs"), toolchain_prefix=sel)
+    fps = run.s["input_fingerprints"]
+    assert fps[str(tmp_path / "goal.sdc")][0] == "sdc" and fps[str(tmp_path / "defs.vh")][0] == "hdl"
+    Run(run.dir)._check_inputs_unchanged()                    # unchanged: fine
+    if edit == "sdc":
+        (tmp_path / "goal.sdc").write_text("create_clock -name clk -period 100 [get_ports clk]\n")
+    else:
+        (tmp_path / "defs.vh").write_text("`define INC 4'd2\n")
+    resumed = Run(run.dir)
+    with pytest.raises(WorkflowError) as e:
+        resumed.advance()
+    assert ("goal.sdc" if edit == "sdc" else "defs.vh") in str(e.value)
+    if edit == "sdc":
+        assert "constraints id" in str(e.value)

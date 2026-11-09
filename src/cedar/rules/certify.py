@@ -132,22 +132,131 @@ def type_variables(rule_text: str, sigs: Dict[str, List[str]]) -> Tuple[List[str
     return tvars, widths
 
 
+# egglog commands/actions that must never appear inside an admitted rule other
+# than the single top-level rule/rewrite and its let/union actions.
+_COMMAND_HEADS = {
+    "rule", "rewrite", "birewrite", "union", "set", "delete", "subsume", "panic", "extract", "let",
+    "check", "fail", "run", "run-schedule", "saturate", "repeat", "seq", "push", "pop", "include",
+    "ruleset", "datatype", "function", "relation", "sort", "constructor", "input", "output",
+    "print-function", "print-size", "print-stats", "query-extract", "simplify", "calc", "define",
+}
+_RULE_KEYWORDS = {":ruleset", ":name"}
+
+
+def _forbidden_heads(expr) -> List[str]:
+    """Command heads nested anywhere inside a term."""
+    found: List[str] = []
+
+    def rec(e):
+        if isinstance(e, list) and e:
+            if isinstance(e[0], str) and e[0] in _COMMAND_HEADS:
+                found.append(e[0])
+            for c in e[1:]:
+                rec(c)
+    rec(expr)
+    return found
+
+
+def validate_rule_text(rule_text: str) -> Tuple[Optional[list], str]:
+    """Validate the *entire* executable content of a rule file.
+
+    Accepted: exactly one top-level ``(rule (premises) (actions) :ruleset rules
+    [:name "..."])`` whose premises are all ``(= a b)`` and whose actions are
+    ``(let name term)`` bindings plus exactly one ``(union ?lhs term)``; or one
+    ``(rewrite lhs rhs :ruleset rules)``. Any other top-level command, action
+    (set, delete, panic, extract, a second union, ...), keyword (``:when``,
+    ``:subsume``) or nested command is rejected. Returns (form, "") or
+    (None, reason). Only the returned form is ever serialized into e-graphs.
+    """
+    try:
+        forms = zv.parse_top_forms(zv._strip_line_comments(rule_text))
+    except ValueError as exc:
+        return None, f"malformed s-expression: {exc}"
+    if len(forms) != 1:
+        return None, f"expected exactly one top-level form (one rule or rewrite), found {len(forms)}"
+    form = forms[0]
+    if not (isinstance(form, list) and form and form[0] in ("rule", "rewrite")):
+        return None, "the top-level form must be a rule or a rewrite"
+    if form[0] == "rule":
+        if len(form) < 3 or not isinstance(form[1], list) or not isinstance(form[2], list):
+            return None, "rule needs (premises) and (actions) lists"
+        for p in form[1]:
+            if not (isinstance(p, list) and len(p) == 3 and p[0] == "="):
+                return None, f"unsupported premise {zv.sexp_to_str(p)[:80]} (only (= a b) is allowed)"
+            bad = _forbidden_heads(p[1]) + _forbidden_heads(p[2])
+            if bad:
+                return None, f"command {bad[0]!r} inside a premise"
+        unions = 0
+        for a in form[2]:
+            if not (isinstance(a, list) and a and isinstance(a[0], str)):
+                return None, f"malformed action {zv.sexp_to_str(a)[:80]}"
+            if a[0] == "let" and len(a) == 3 and isinstance(a[1], str) and not a[1].startswith((":", '"')):
+                bad = _forbidden_heads(a[2])
+            elif a[0] == "union" and len(a) == 3:
+                unions += 1
+                bad = _forbidden_heads(a[1]) + _forbidden_heads(a[2])
+            else:
+                return None, f"unmodeled action {a[0]!r} (only let bindings and one union are allowed)"
+            if bad:
+                return None, f"command {bad[0]!r} nested inside an action"
+        if unions != 1:
+            return None, f"expected exactly one union action, found {unions}"
+        kw = form[3:]
+        allowed = _RULE_KEYWORDS
+    else:
+        if len(form) < 3:
+            return None, "rewrite needs a left- and right-hand side"
+        bad = _forbidden_heads(form[1]) + _forbidden_heads(form[2])
+        if bad:
+            return None, f"command {bad[0]!r} inside the rewrite"
+        kw = form[3:]
+        allowed = {":ruleset"}
+    if len(kw) % 2:
+        return None, "dangling keyword argument"
+    seen = {}
+    for k, v in zip(kw[0::2], kw[1::2]):
+        if k not in allowed:
+            return None, f"unsupported keyword {k!r}"
+        seen[k] = v
+    if seen.get(":ruleset") != "rules":
+        return None, "the rule must declare :ruleset rules"
+    if ":name" in seen and not (isinstance(seen[":name"], str) and seen[":name"].startswith('"')):
+        return None, ":name must be a string"
+    return form, ""
+
+
+def _type_sexp(width: int) -> list:
+    return [f"I{width}"] if width in (1, 4, 8, 16, 32, 64) else ["Int", width]
+
+
+def _subst(expr, var: str, value):
+    if isinstance(expr, str) and expr == var:
+        return value
+    if isinstance(expr, list):
+        return [_subst(e, var, value) for e in expr]
+    return expr
+
+
 def specialize(rule_text: str, width: int, sigs: Dict[str, List[str]]) -> Tuple[Optional[str], str]:
-    """Return (instance_text, reason). ``None`` when the rule cannot be
-    instantiated at ``width`` (reason says why)."""
-    tvars, concrete = type_variables(rule_text, sigs)
+    """Return (canonical instance text, reason), or (None, reason).
+
+    The instance is re-serialized from the validated parse tree, so comments and
+    anything outside the single validated rule can never reach egglog.
+    """
+    form, err = validate_rule_text(rule_text)
+    if form is None:
+        return None, f"rejected: {err}"
+    canonical = zv.sexp_to_str(form)
+    tvars, concrete = type_variables(canonical, sigs)
     if len(tvars) > 1:
         return None, f"unsupported: {len(tvars)} independent type variables {tvars} (multi-width rule)"
     if not tvars:
         wide = [w for w in concrete if w != 1]
         if (wide and width not in wide) or (not wide and width != 1):
             return None, f"rule is fixed to widths {concrete}"
-        return rule_text, "concrete"
+        return canonical, "concrete"
     tv = tvars[0]
-    pat = re.compile(r"(?<![\w?\-])" + re.escape(tv) + r"(?![\w\-])")
-    body = rule_text
-    out = pat.sub(type_term(width), body)
-    return out, f"type variable {tv} := {type_term(width)}"
+    return zv.sexp_to_str(_subst(form, tv, _type_sexp(width))), f"type variable {tv} := {type_term(width)}"
 
 
 @dataclass
@@ -241,13 +350,9 @@ def prove_instance(rule_name: str, rule_text: str, width: int, sigs: Dict[str, L
         phrase = zv.check_banned_phrase(zv._extract_leading_comment(rule_text))
         if phrase:
             return cert("REJECTED", f"banned-phrase {phrase!r}")
-    try:
-        forms = zv.parse_top_forms(zv._strip_line_comments(rule_text))
-    except ValueError as exc:
-        return cert("REJECTED", f"malformed s-expression: {exc}")
-    n_rules = sum(1 for f in forms if isinstance(f, list) and f and f[0] in ("rule", "rewrite"))
-    if n_rules != 1:
-        return cert("REJECTED", f"expected exactly one rule/rewrite form, found {n_rules}")
+    _form, err = validate_rule_text(rule_text)
+    if _form is None:
+        return cert("REJECTED", err)
     inst, why = specialize(rule_text, width, sigs)
     if inst is None:
         return cert("UNSUPPORTED", why)
@@ -421,12 +526,17 @@ def admit(rules: Dict[str, str], widths: Iterable[int], store: Optional[Certific
     adm = Admission()
     for name, text in sorted(rules.items()):
         sha = rule_sha(text)
-        tvars, concrete = type_variables(text, sigs)
+        form, err = validate_rule_text(text)
+        if form is None:
+            c, _ = prove_instance(name, text, min(widths, default=1), sigs, timeout_ms, max_width)
+            adm.rejected.append(c)
+            continue
+        tvars, concrete = type_variables(zv.sexp_to_str(form), sigs)
         targets = sorted(set(widths)) if tvars else (sorted(set(concrete) - {1}) or [1])
         for w in targets:
             cached = store.get(sha, w) if store else None
-            if cached is not None:
-                inst, _ = specialize(text, w, sigs)
+            inst, _ = specialize(text, w, sigs)
+            if cached is not None and inst is not None and cached.instance_sha256 == rule_sha(inst):
                 c = cached
             else:
                 c, inst = prove_instance(name, text, w, sigs, timeout_ms, max_width)

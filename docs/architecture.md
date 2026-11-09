@@ -44,7 +44,14 @@
 
 ## Rule admission (`cedar.rules.certify`)
 
-Rules are quarantined text. For each bit width present in the target design
+Rules are quarantined text. First the *entire executable content* is
+validated: exactly one top-level `rule` (premises only `(= a b)`; actions only
+`let` bindings and exactly one `union`; keywords `:ruleset rules` and `:name`)
+or one `rewrite`; any other top-level command, action (`set`, `delete`,
+`panic`, `extract`, a second `union`, ...), keyword (`:when`, `:subsume`) or
+nested command is rejected. Only the canonical re-serialization of the
+validated parse tree is ever written into an e-graph program, so comments or
+trailing text cannot smuggle commands past the proof. For each bit width present in the target design
 the rule's single type variable is replaced by that concrete type, which both
 *guards* the rule (it can only match e-nodes of that width) and fixes the proof
 width. `cedar.rules.z3verify` (the paper's Z3 bit-vector verifier, used as a

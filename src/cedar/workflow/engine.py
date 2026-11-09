@@ -157,7 +157,12 @@ class Run:
         snap.mkdir()
         for name, ld in (("design", design), ("tools", tools), ("technology", tech)):
             (snap / f"{name}.json").write_text(json.dumps(ld.provenance(), indent=2, default=str))
-        return cls(rdir)
+        run = cls(rdir)
+        # Fingerprint every input that can change behaviour or constraints, so a
+        # resumed run can prove it still measures under the same conditions.
+        run.s["input_fingerprints"] = run._input_fingerprints()
+        run.save()
+        return run
 
     # ------------------------------------------------------------ helpers
 
@@ -245,9 +250,82 @@ class Run:
             p = Path(path) if os.path.isabs(path) else None
             if p is not None and (not p.is_file() or _sha_file(str(p)) != sha):
                 changed.append(f"RTL {path}")
+        stored = self.s.get("input_fingerprints")
+        if stored is not None:
+            now_fp = self._input_fingerprints()
+            for path in sorted(set(stored) | set(now_fp)):
+                if stored.get(path) != now_fp.get(path):
+                    what = "added" if path not in stored else ("removed" if path not in now_fp else "changed")
+                    changed.append(f"{stored.get(path, now_fp.get(path, ['?']))[0]} {path} {what}")
+        cid = cfgmod.constraints_id(self.design, self.tech, self.s["corner"])
+        if cid != self.s["constraints_id"]:
+            changed.append(f"constraints id {self.s['constraints_id']} -> {cid}")
         if changed:
             raise WorkflowError("inputs changed since this run started (" + "; ".join(changed) +
                                 "); measurements would no longer be comparable — start a new run")
+
+    _INCLUDE_RE = re.compile(r'^\s*`include\s+"([^"]+)"', re.M)
+
+    def _hdl_closure(self, files: List[str]) -> List[str]:
+        """Files plus every `include they reach (resolved like the frontends)."""
+        incs = [Path(i["path"]) for i in self.design.data.get("include_dirs") or []]
+        seen: List[str] = []
+        todo = [str(Path(f).resolve()) for f in files]
+        while todo:
+            f = todo.pop()
+            if f in seen:
+                continue
+            seen.append(f)
+            try:
+                text = Path(f).read_text(errors="replace")
+            except OSError:
+                continue
+            for inc in self._INCLUDE_RE.findall(text):
+                for d in [Path(f).parent] + incs:
+                    cand = (d / inc).resolve()
+                    if cand.is_file():
+                        todo.append(str(cand))
+                        break
+                else:
+                    seen.append(f"<unresolved include {inc} from {f}>")
+        return seen
+
+    def _input_fingerprints(self) -> Dict[str, list]:
+        """Content hashes of behaviour/constraint inputs; size+mtime for libraries."""
+        dd = self.design.data
+        fp: Dict[str, list] = {}
+
+        def content(kind: str, path: Optional[str]) -> None:
+            if not path:
+                return
+            if path.startswith("<unresolved"):
+                fp[path] = [kind, "unresolved"]
+                return
+            p = Path(path)
+            fp[str(p)] = [kind, _sha_file(str(p)) if p.is_file() else "missing"]
+
+        for f in self._hdl_closure(self.s["rtl"]):
+            content("hdl", f)
+        if dd.get("sdc"):
+            content("sdc", dd["sdc"]["path"])
+        for kind, cfg in (("activity-testbench", dd.get("activity") or {}),
+                          ("checking-testbench", dd.get("verification") or {})):
+            if cfg.get("testbench"):
+                for f in self._hdl_closure([cfg["testbench"]["path"]]):
+                    content(kind, f)
+        for sec, key in (("synthesis", "pre_compile_hook"), ("synthesis", "post_compile_hook"),
+                         ("place_route", "post_init_hook"), ("place_route", "pre_route_hook")):
+            content("tcl-hook", self.ctx.hook(sec, key))
+        content("setup-script", self.tenv.setup_script)
+        try:
+            libs = self.ctx.dbs() + self.ctx.libs() + self.ctx.sim_models() + [self.ctx.rc_tech()] + self.ctx.lefs()
+        except (KeyError, TypeError):
+            libs = []
+        for f in libs:
+            p = Path(f)
+            st = p.stat() if p.exists() else None
+            fp[str(p)] = ["library", f"{st.st_size}:{int(st.st_mtime)}" if st else "missing"]
+        return fp
 
     def _advance(self, agent_cmd: Optional[str], agent_label: Optional[Dict[str, str]],
                  stop_after: Optional[str]) -> str:
@@ -783,7 +861,7 @@ class Run:
         pend = self.task_of("stop_decision", key=f"after-{len(iters)}")
         if pend is not None and pend.status != "accepted":
             return AWAIT                                   # never skip a pending stop decision
-        successful = sum(1 for x in iters if x.get("verified"))
+        successful = sum(1 for x in iters if self._iter_ok(x))
         if it >= st["max_iterations"]:
             return "next"
         if self._should_stop(successful):
@@ -805,7 +883,7 @@ class Run:
         for x in reversed(iters):
             if x.get("frontier_changed"):
                 break
-            if x.get("verified"):
+            if self._iter_ok(x):
                 stall += 1
         if stall < st["stall_window"]:
             return False
@@ -819,10 +897,49 @@ class Run:
         except Exception:  # noqa: BLE001
             return True
 
+    def _axes(self) -> tuple:
+        mode = self.s["measurement"].get("mode", "full-ppa")
+        return ("area", "delay") if mode == "synthesis-only" else ("area", "delay", "power")
+
+    def _candidate_problems(self, c: dict) -> List[str]:
+        """Why a candidate is not a verified, completely and comparably measured point."""
+        probs: List[str] = []
+        if not c.get("verified"):
+            probs.append(f"verification {(c.get('verification') or {}).get('status', 'missing')}")
+        if not self._rtl_intact(c):
+            probs.append("RTL changed after verification")
+        m = c.get("measurement")
+        if not m:
+            probs.append("not measured")
+            return probs
+        if m.get("pruned"):
+            probs.append("approximate pruning skipped P&R/power (unmeasured)")
+        failed = [f"{st['stage']} {st['status']}" for st in m.get("stages", []) if st.get("status") != "ok"]
+        if failed:
+            probs.append("stage(s) " + ", ".join(failed))
+        ppa = PPA.from_dict(m["ppa"])
+        probs += ppa.require(self._axes())
+        b = self.baseline_ppa()
+        if b is not None and c is not self.s["candidates"].get("baseline"):
+            from ..metrics import comparable
+            probs += [f"not comparable to baseline: {p}" for p in comparable(ppa, b, self._axes())]
+        if not m.get("complete"):
+            probs.append("measurement marked incomplete")
+        return list(dict.fromkeys(probs))
+
+    def _iter_ok(self, x: dict) -> bool:
+        """One predicate for budgets, diversity, stagnation and the contract:
+        the iteration's candidate passed verification AND was completely and
+        comparably measured."""
+        if not x.get("verified"):
+            return False
+        c = self.s["candidates"].get(f"iter{x['iteration']:02d}")
+        return c is not None and not self._candidate_problems(c)
+
     def _distinct(self, what: str) -> set:
         out = set()
         for x in self.s["iterations"]:
-            if not x.get("verified"):
+            if not self._iter_ok(x):
                 continue
             if what == "cost":
                 out.add(x.get("cost_config_id"))
@@ -950,6 +1067,10 @@ class Run:
             rec["ppa"] = ppa.summary()
             rec["score"] = score
             rec["score_problems"] = probs
+            rec["measurement_problems"] = self._candidate_problems(c)
+            rec["successful"] = not rec["measurement_problems"]
+            if not rec["successful"]:
+                self.log(f"{name}: NOT a successful iteration — {'; '.join(rec['measurement_problems'])}")
             if c.get("extraction_method") == "circt" or rec.get("extraction_method") == "circt":
                 self._attribute(name, rec)
             if not rec.get("history_recorded"):
@@ -961,13 +1082,13 @@ class Run:
             return "iterate"
         if stage == "decide":
             st = self.settings
-            successful = sum(1 for x in self.s["iterations"] if x.get("verified"))
+            successful = sum(1 for x in self.s["iterations"] if self._iter_ok(x))
             if st.get("agent_stop") and successful >= st["min_iterations"]:
                 stall = 0
                 for x in reversed(self.s["iterations"]):
                     if x.get("frontier_changed"):
                         break
-                    if x.get("verified"):
+                    if self._iter_ok(x):
                         stall += 1
                 key = f"after-{len(self.s['iterations'])}"
                 if stall >= st["stall_window"] and self.task_of("stop_decision", key=key) is None:
@@ -1001,6 +1122,7 @@ class Run:
             "clock_ns": self.design.data["clocks"][0]["period_ns_resolved"], "objective": rec["weights"],
             "rules": rec["rules"], "rule_matches": rec.get("eqsat", {}).get("rule_matches"),
             "probes": {r: self.s["probes"].get(r) for r in rec["rules"]}, "verified": rec.get("verified"),
+            "complete": bool(rec.get("successful")),
             "metric_deltas": deltas, "score_improvement": imp, "run": self.s["run_id"],
             "note": "combination-level outcome; individual rule effects are not attributed",
         })
@@ -1060,7 +1182,7 @@ class Run:
 
     def _contract(self) -> dict:
         iters = self.s["iterations"]
-        return presets.contract_status(self.settings, sum(1 for x in iters if x.get("verified")),
+        return presets.contract_status(self.settings, sum(1 for x in iters if self._iter_ok(x)),
                                        len(self._distinct("cost")), len(self._distinct("rules")), len(iters))
 
     def phase_attribution(self) -> str:
@@ -1090,17 +1212,11 @@ class Run:
         for name, c in self.s["candidates"].items():
             ppa = PPA.from_dict(c["measurement"]["ppa"]) if c.get("measurement") else None
             score = self.objective.score(ppa, b)[0] if ppa else None
-            intact = self._rtl_intact(c)
-            complete = bool(ppa) and bool((c.get("measurement") or {}).get("complete")) and not ppa.require(axes)
+            reasons = self._candidate_problems(c)
+            complete = bool(ppa) and not any(r.startswith(("stage(s)", "not measured", "measurement marked"))
+                                             or r.split(":")[0] in axes for r in reasons)
             feasible = bool(ppa) and self.objective.feasible(ppa)
-            reasons = []
-            if not c.get("verified"):
-                reasons.append(f"verification {c.get('verification', {}).get('status')}")
-            if not intact:
-                reasons.append("RTL changed after verification")
-            if not complete:
-                reasons.append("measurement incomplete" + (f" ({'; '.join(ppa.require(axes))})" if ppa else ""))
-            elif not feasible:
+            if ppa and not feasible:
                 reasons.append("timing goal not met")
             cands.append({"name": name, "origin": c["origin"], "verified": c.get("verified"),
                           "verification": c.get("verification", {}).get("status"),
@@ -1118,6 +1234,12 @@ class Run:
                               "power": "post-route PrimeTime with SAIF (SDF gate-level simulation) + SPEF"},
             "verification_mode": self.verification_mode, "preset": self.settings["preset"],
             "execution_contract": contract,
+            "iteration_outcomes": [{"iteration": x["iteration"], "successful": self._iter_ok(x),
+                                    "problems": ([] if self._iter_ok(x) else
+                                                 (self._candidate_problems(self.s["candidates"][f"iter{x['iteration']:02d}"])
+                                                  if f"iter{x['iteration']:02d}" in self.s["candidates"]
+                                                  else [x.get("extraction_error") or "no candidate produced"]))}
+                                   for x in self.s["iterations"]],
             "frontier": fr.to_dict(),
             "candidates": cands,
             "accepted_candidates": [c["name"] for c in accepted],

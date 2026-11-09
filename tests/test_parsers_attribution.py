@@ -70,3 +70,57 @@ def test_line_ops_and_cell_origin():
     assert A.cell_origin("y_reg_0_", "DFFHQNx1_ASAP7_75t_R", xp, "d.v")[2] == "seq_firreg"
     assert A.cell_origin("U3", "NAND2xp5", xp, "d.v")[2] is None
     assert A.cell_origin("FE_DBTN0", "BUF", xp, "d.v") is None
+
+
+PASS_VER = "2. Incomplete verification: 0\n6. Compare Results: PASS\n"
+PASS_LOG = "Equivalent           16     16        32\n"
+
+
+def test_conformal_nonzero_exit_never_passes(tmp_path):
+    for status, rc in (("failed", 2), ("failed", 1)):
+        res = _conf(tmp_path, PASS_VER, PASS_LOG, status)
+        assert res["status"] == "error", res
+    # a failed process may still confirm a non-equivalence (safe direction)
+    res = _conf(tmp_path, "6. Compare Results: FAIL\n", "Non-equivalent 3 0 3\n", "failed")
+    assert res["status"] == "failed"
+    assert flow.parse_conformal(StageResult("equivalence", "timeout", detail="x"))["status"] == "error"
+
+
+def test_conformal_stale_reports_rejected(tmp_path):
+    import os
+    import time
+    v = w(tmp_path, "verification.rpt", PASS_VER)
+    lg = w(tmp_path, "conformal.log", PASS_LOG)
+    old = time.time() - 3600
+    os.utime(v, (old, old))
+    os.utime(lg, (old, old))
+    r = StageResult("equivalence", "ok", log=str(lg), returncode=0,
+                    outputs={"verification_rpt": str(v), "log": str(lg), "started_at": repr(time.time())})
+    assert flow.parse_conformal(r)["status"] == "error"
+
+
+def test_conformal_retry_clears_previous_reports(tmp_path, monkeypatch):
+    """A retry whose tool writes nothing must not reuse the previous PASS report."""
+    import yaml
+
+    from cedar import config as C
+    from cedar.eda.runner import ToolEnv
+    for n in ("a.db", "a.lib", "a.v", "rc", "tech.lef", "cells.lef"):
+        (tmp_path / n).write_text("")
+    (tmp_path / "tools.yaml").write_text(yaml.safe_dump({"schema": "cedar/tool-profile@1", "name": "t", "tools": {
+        "equivalence": {"adapter": "cadence-conformal", "executable": "true"}}}))
+    (tmp_path / "tech.yaml").write_text(yaml.safe_dump({
+        "schema": "cedar/technology@1", "name": "x", "units": {"time": "ps"}, "default_corner": "tt",
+        "corners": {"tt": {"db": ["a.db"], "liberty": ["a.lib"], "sim_models": ["a.v"], "rc_tech": "rc"}},
+        "lef": {"tech": "tech.lef", "cells": ["cells.lef"]}, "place_route": {"site": "core"}}))
+    ctx = flow.FlowContext(ToolEnv(C.load_tool_profile(str(tmp_path / "tools.yaml"))),
+                           C.load_technology(str(tmp_path / "tech.yaml")), "tt", "m",
+                           [{"port": "clk", "period_ns_resolved": 1.0}], 0.1)
+    work = tmp_path / "lec"
+    work.mkdir()
+    w(work, "verification.rpt", PASS_VER)          # left over from a previous attempt
+    w(work, "lec.log", PASS_LOG)
+    r = flow.conformal_lec(ctx, [str(tmp_path / "a.v")], [str(tmp_path / "a.v")], work)
+    assert r.status == "ok"                          # `true` exits 0 but writes no report
+    assert not (work / "verification.rpt").exists()
+    assert flow.parse_conformal(r)["status"] == "error"

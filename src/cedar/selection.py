@@ -79,7 +79,7 @@ class History:
         best: Optional[dict] = None
         n = 0
         for r in self.records():
-            if rule not in r.get("rules", []) or not r.get("verified"):
+            if rule not in r.get("rules", []) or not r.get("verified") or r.get("complete") is False:
                 continue
             n += 1
             sim = _cos(features, r.get("features", {}))

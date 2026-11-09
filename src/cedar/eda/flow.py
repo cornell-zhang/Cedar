@@ -20,6 +20,7 @@ from __future__ import annotations
 import glob
 import re
 import shutil
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -124,6 +125,22 @@ class FlowContext:
         return path
 
 
+def _clear(work: Path, names: Sequence[str]) -> float:
+    """Delete outputs of a previous attempt so they can never satisfy a new one;
+    returns the start time used for freshness checks."""
+    for n in names:
+        p = work / n
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+        elif p.exists() or p.is_symlink():
+            p.unlink()
+    return time.time()
+
+
+def _fresh(path: Path, started: float) -> bool:
+    return path.is_file() and path.stat().st_mtime >= started - 1.0
+
+
 def _lib_or_default(ctx: "FlowContext", value: Optional[float], default_ns: float) -> float:
     """Explicit value (library time unit) or a default given in ns, converted."""
     return float(value) if value is not None else ctx.to_lib_time(default_ns)
@@ -183,6 +200,7 @@ def parse_saif_coverage(pt_log: Path) -> Optional[float]:
 
 def synthesize(ctx: FlowContext, rtl: Sequence[str], work: Path, timeout: Optional[int] = None) -> StageResult:
     work.mkdir(parents=True, exist_ok=True)
+    _clear(work, ["results", "dc.log", "WORK"])
     res = work / "results"
     res.mkdir(exist_ok=True)
     sdc = ctx.write_sdc(work / "constraints.sdc")
@@ -274,6 +292,7 @@ def synth_metrics(ctx: FlowContext, r: StageResult) -> Dict[str, Metric]:
 
 def place_route(ctx: FlowContext, netlist: str, sdc: str, work: Path, timeout: Optional[int] = None) -> StageResult:
     work.mkdir(parents=True, exist_ok=True)
+    _clear(work, ["post_route.v", "post_route.spef", "post_route.sdf", "post_route_timing.rpt", "innovus.log"])
     pr = ctx.tech.data["place_route"]
     mmmc = [
         f"create_library_set -name libset -timing {tcl_list(ctx.libs())}",
@@ -347,6 +366,7 @@ def activity_sim(ctx: FlowContext, netlist: str, sdf: str, testbench: str, tb_to
                  work: Path, timeout: Optional[int] = None) -> StageResult:
     """SDF-annotated gate-level simulation -> VCD -> SAIF."""
     work.mkdir(parents=True, exist_ok=True)
+    _clear(work, ["waves.vcd", "waves.saif", "sim.log", "simv_gl", "simv_gl.daidir", "csrc"])
     period_ns = ctx.clocks[0]["period_ns_resolved"]
     args = ["-full64", "-sverilog", "-xprop=tmerge", "-override_timescale=1ns/1ps", "-top", tb_top,
             "+neg_tchk", "+sdfverbose", f"-sdf", f"max:{tb_top}.{dut}:{sdf}",
@@ -393,6 +413,7 @@ def _shell(ctx: FlowContext, work: Path, cmd: str, log: Path, timeout: Optional[
 def power_pt(ctx: FlowContext, netlist: str, spef: str, saif: str, sdc: str, tb_top: str, dut: str,
              work: Path, timeout: Optional[int] = None) -> StageResult:
     work.mkdir(parents=True, exist_ok=True)
+    _clear(work, ["power.rpt", "power_cells.rpt", "switching_activity.rpt", "pt.log"])
     lines = [
         f"set dbs {tcl_list(ctx.dbs())}",
         "set_app_var target_library $dbs",
@@ -461,25 +482,48 @@ def conformal_lec(ctx: FlowContext, golden: Sequence[str], revised: Sequence[str
         "exit -force",
     ]
     (work / "lec.do").write_text("\n".join(lines) + "\n")
+    started = _clear(work, ["verification.rpt", "compare_summary.rpt", "unmapped.rpt", "lec.log", "conformal.log"])
     r = ctx.tools.run("equivalence", ["-nogui", "-dofile", str(work / "lec.do")], work, work / "conformal.log",
                       timeout, stdin_text="", label="equivalence")
-    r.outputs = {"verification_rpt": str(work / "verification.rpt"), "log": str(work / "conformal.log")}
+    r.outputs = {"verification_rpt": str(work / "verification.rpt"), "log": str(work / "conformal.log"),
+                 "started_at": repr(started)}
     return r
 
 
 def parse_conformal(r: StageResult) -> Dict[str, object]:
-    """Return {'status': passed|failed|error, 'detail':..., 'points':...}."""
-    if r.status in ("unavailable", "timeout"):
-        return {"status": "unavailable" if r.status == "unavailable" else "error", "detail": r.detail}
-    log = Path(r.outputs.get("log", r.log)).read_text(errors="replace") if Path(r.outputs.get("log", r.log)).exists() else ""
+    """Return {'status': passed|failed|unavailable|error, 'detail':..., 'points':...}.
+
+    ``passed`` requires a successful process (exit 0) AND fresh report evidence
+    written by this invocation. A failed process can at most confirm a
+    non-equivalence (``failed``); otherwise it is an ``error``.
+    """
+    if r.status == "unavailable":
+        return {"status": "unavailable", "detail": r.detail}
+    if r.status == "timeout":
+        return {"status": "error", "detail": f"Conformal timed out: {r.detail}"}
+    started = float(r.outputs.get("started_at", "0") or 0)
+    logp = Path(r.outputs.get("log", r.log))
     ver = Path(r.outputs["verification_rpt"])
-    vtxt = ver.read_text(errors="replace") if ver.is_file() else ""
+    fresh_log = _fresh(logp, started)
+    fresh_ver = _fresh(ver, started)
+    log = logp.read_text(errors="replace") if fresh_log else ""
+    vtxt = ver.read_text(errors="replace") if fresh_ver else ""
     m = re.search(r"Compare Results:\s+(\w+)", vtxt)
     inc = re.search(r"Incomplete verification:\s+(\d+)", vtxt)
     eq = re.search(r"^Equivalent\s+.*?(\d+)\s*$", log, re.M)
     neq = re.search(r"^Non-equivalent\s+.*?(\d+)\s*$", log, re.M)
     ab = re.search(r"^Abort\s+.*?(\d+)\s*$", log, re.M)
     points = int(eq.group(1)) if eq else 0
+    says_fail = (m is not None and m.group(1) != "PASS") or bool(neq and int(neq.group(1)) > 0)
+    if r.status != "ok":
+        if says_fail:
+            return {"status": "failed", "detail": f"Conformal reported non-equivalence (exit {r.returncode})"
+                    f"{'; non-equivalent ' + neq.group(1) if neq else ''}", "points": points}
+        return {"status": "error", "detail": f"Conformal process failed (status {r.status}, exit {r.returncode}); "
+                "report evidence is not accepted", "points": points}
+    if not fresh_ver or not fresh_log:
+        return {"status": "error", "detail": "no verification report/log written by this Conformal invocation",
+                "points": points}
     if not m:
         return {"status": "error", "detail": "no 'Compare Results' in verification report", "points": points}
     if m.group(1) != "PASS":
@@ -498,6 +542,7 @@ def rtl_sim_check(ctx: FlowContext, design: Sequence[str], testbench: str, pass_
                   work: Path, timeout: Optional[int] = None) -> Dict[str, object]:
     """Self-checking RTL simulation (explicitly selected verification mode)."""
     work.mkdir(parents=True, exist_ok=True)
+    _clear(work, ["sim_check.log", "simv_chk", "simv_chk.daidir", "csrc"])
     extra = [f"+incdir+{d}" for d in ctx.include_dirs]
     extra += [f"+define+{k}={v}" if v not in (None, "") else f"+define+{k}" for k, v in ctx.defines.items()]
     r = ctx.tools.run("simulation", ["-full64", "-sverilog", "+v2k", "-timescale=1ns/1ps", "-o", "simv_chk",

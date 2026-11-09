@@ -98,12 +98,12 @@ def test_vector_read_in_action_counts_for_guard(template_sigs):
 
 def test_review_counterexamples_rejected(template_sigs):
     # rewrite forms cannot length-guard a matched operand vector
-    rw = "(rewrite (comb_add ?a ?ops ?t) (comb_add (vec-get ?ops 0) (vec-push (vec-empty) ?a) ?t))"
+    rw = "(rewrite (comb_add ?a ?ops ?t) (comb_add (vec-get ?ops 0) (vec-push (vec-empty) ?a) ?t) :ruleset rules)"
     for w in (1, 8):
         assert C.prove_instance("rw", rw, w, template_sigs)[0].status == "UNSUPPORTED"
     # operand width fixed only through the union / RHS, attribute type counted as data
-    ex = '(rewrite (comb_extract ?x (NamedAttr "lowBit" (IntegerAttr 0 (I32))) ?t) ?x)'
-    ex1 = '(rewrite (comb_extract ?x (NamedAttr "lowBit" (IntegerAttr 0 (I32))) (I1)) ?x)'
+    ex = '(rewrite (comb_extract ?x (NamedAttr "lowBit" (IntegerAttr 0 (I32))) ?t) ?x :ruleset rules)'
+    ex1 = '(rewrite (comb_extract ?x (NamedAttr "lowBit" (IntegerAttr 0 (I32))) (I1)) ?x :ruleset rules)'
     for rule in (ex, ex1):
         for w in (1, 8, 32):
             assert C.prove_instance("ex", rule, w, template_sigs)[0].status != "PROVED"
@@ -111,3 +111,74 @@ def test_review_counterexamples_rejected(template_sigs):
                  ((union ?l (comb_xor ?a (vec-push (vec-empty) ?b) ?t))) :ruleset rules)"""
     assert C.prove_instance("ne", ne, 1, template_sigs)[0].status != "PROVED"
     assert C.type_variables(ex1, template_sigs)[1] == [1]          # attribute I32 is not a data width
+
+
+# --- review regressions: unchecked egglog commands must never be admitted ---
+
+_FALSE_UNION = ('(union (hw_constant (NamedAttr "value" (IntegerAttr 0 (I8))) (I8)) '
+                '(hw_constant (NamedAttr "value" (IntegerAttr 1 (I8))) (I8)))')
+_CONSTS_EQUAL = ('(check (= (hw_constant (NamedAttr "value" (IntegerAttr 0 (I8))) (I8)) '
+                 '(hw_constant (NamedAttr "value" (IntegerAttr 1 (I8))) (I8))))')
+
+
+def _seed(name):
+    return resources.files("cedar").joinpath(f"data/rules/{name}.egg").read_text()
+
+
+def _bypass_variants():
+    add = _seed("add_commute")
+    return {
+        "extra top-level union": add + "\n" + _FALSE_UNION + "\n",
+        "extra top-level set": add + "\n(set (comb_add (Value 0 (I8)) (vec-empty) (I8)) (Value 0 (I8)))\n",
+        "set action beside union": add.replace("(union ?lhs s))", "(union ?lhs s)\n     (set (comb_add ?a ?ops ?t) ?a))"),
+        "second union action": add.replace("(union ?lhs s))", "(union ?lhs s)\n     (union ?a ?b))"),
+        "panic action": add.replace("(union ?lhs s))", "(union ?lhs s)\n     (panic \"x\"))"),
+        "nested command in let": add.replace("(let s (comb_add", "(let s (set (comb_add"),
+        "non-equality premise": add.replace("(= 1 (vec-length ?ops))", "(!= ?a ?b) (= 1 (vec-length ?ops))"),
+        "foreign ruleset": add.replace(":ruleset rules", ":ruleset other"),
+        "subsume keyword": add.replace(":ruleset rules", ":ruleset rules :subsume true"),
+        "rewrite with when": "(rewrite (comb_mul ?a ?ops ?t) ?a :when ((= ?a ?a)) :ruleset rules)",
+    }
+
+
+def test_unchecked_commands_rejected(template_sigs):
+    for label, text in _bypass_variants().items():
+        assert C.validate_rule_text(text)[0] is None, label
+        c, inst = C.prove_instance(label, text, 8, template_sigs)
+        assert c.status == "REJECTED" and inst is None, (label, c.status, c.detail)
+        adm = C.admit({"x": text}, [1, 8, 16], None, template_sigs)
+        assert not adm.admitted, label
+
+
+def test_admitted_instance_is_canonical_single_rule(template_sigs):
+    text = "; comment (union a b)\n" + _seed("add_commute") + "\n; trailing (set x y)\n"
+    c, inst = C.prove_instance("add_commute", text, 8, template_sigs)
+    assert c.status == "PROVED"
+    forms = __import__("cedar.rules.z3verify", fromlist=["x"]).parse_top_forms(inst)
+    assert len(forms) == 1 and forms[0][0] == "rule" and ";" not in inst and "(I8)" in inst
+
+
+def test_injection_has_no_effect_in_real_egglog(tmp_path, toolchain):
+    """Execute admitted instances with the real egglog binary: the false
+    constant equality must not hold. The control (raw injected text) shows the
+    check would detect the bypass."""
+    import shutil
+    import subprocess
+
+    from cedar.egraph import pipeline
+    sigs = C.signatures_from_template(toolchain.template("circt.egg").read_text())
+    shutil.copy(toolchain.template("base.egg"), tmp_path / "base.egg")
+
+    def egglog_check(rule_texts, name):
+        prog = pipeline.build_program(toolchain, rule_texts, 1) + "\n" + _CONSTS_EQUAL + "\n"
+        (tmp_path / f"{name}.egg").write_text(prog)
+        return subprocess.run([toolchain.tool("egglog"), f"{name}.egg"], cwd=tmp_path, capture_output=True,
+                              text=True, timeout=120).returncode
+
+    injected = _bypass_variants()["extra top-level union"]
+    assert egglog_check([injected], "control") == 0          # raw text: constants (wrongly) equal
+    clean = C.admit({"add_commute": _seed("add_commute")}, [8], None, sigs)
+    assert egglog_check([i.text for i in clean.admitted], "clean") != 0
+    adm = C.admit({"add_commute": injected}, [8], None, sigs)
+    assert not adm.admitted
+    assert egglog_check([i.text for i in adm.admitted], "admitted") != 0

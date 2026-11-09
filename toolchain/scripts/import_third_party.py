@@ -66,12 +66,32 @@ _PATH_EXPORT_FILES = [
     "test/replacement/run_eqsat.sh",
 ]
 
+_HEADER_NORMALIZATION_FILES = [
+    "src/LowerFreeLLHDSignalsPass.cpp",
+    "src/LowerFreeLLHDSignalsPass.h",
+    "src/LowerInterProcessLLHDSignalsPass.cpp",
+    "src/LowerInterProcessLLHDSignalsPass.h",
+    "src/LowerLoopCarryProcessesPass.cpp",
+    "src/LowerLoopCarryProcessesPass.h",
+    "test/reconstruct_opaque_region_capture/Inputs/accumulator_opaque_capture_cfbr.egg",
+    "test/reconstruct_synthetic_nodes/Inputs/base.egg",
+    "test/reconstruct_synthetic_nodes/Inputs/rom_alias.egg",
+]
+
 # An `export PATH=` assignment whose value starts with an absolute directory
 # (a developer machine path) rather than an environment variable.
 _ABS_DEV_PATH = r"(/[A-Za-z0-9_.-]+){2,}"
 
 
 def _edit_dialegg(root: Path) -> None:
+    for rel in _HEADER_NORMALIZATION_FILES:
+        f = root / rel
+        if f.is_file():
+            f.write_text(re.sub(
+                r"^(?://|;) SPDX-FileCopyrightText:[^\n]*\n", "", f.read_text(),
+                flags=re.M,
+            ))
+
     cm = root / "CMakeLists.txt"
     text = cm.read_text()
     new_text = re.sub(

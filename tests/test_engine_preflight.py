@@ -81,3 +81,15 @@ def test_run_wait_reports_final_state(tmp_path, toolchain, monkeypatch):
     assert main(["run", "wait", "--run", str(run.dir), "--timeout", "5"]) == 1   # running, nobody advancing
     run.advance()
     assert main(["run", "wait", "--run", str(run.dir), "--timeout", "5"]) == 1   # missing_capability -> failure
+
+
+def test_unbound_clock_port_fails_closed(tmp_path, toolchain, monkeypatch):
+    monkeypatch.setenv("CEDAR_STATE_HOME", str(tmp_path / "state"))
+    d = _setup(tmp_path, with_equivalence=True)
+    doc = yaml.safe_load(d.read_text())
+    doc["clocks"] = [{"port": "core_clk", "period_ns": 1.0}]
+    d.write_text(yaml.safe_dump(doc))
+    sel = str(toolchain.bin_dir.parent) if toolchain.bin_dir.name == "bin" else None
+    run = Run.create(str(d), str(tmp_path / "runs"), toolchain_prefix=sel)
+    assert run.advance() == "failed"
+    assert "core_clk" in run.s["error"] and "clk" in run.s["error"]

@@ -401,6 +401,14 @@ class Run:
         pipeline.frontend(self.tc, self.s["rtl"], self.s["top"], mlir, self.dir / "inputs",
                           [i["path"] for i in dd.get("include_dirs") or []], dd.get("defines") or {}, flatten=False)
         self.s["baseline_signature"] = _module_signature(mlir.read_text(), self.s["top"])
+        ports = set(re.findall(r"\b(?:in|inout)\s+%?\"?([\w$]+)\"?\s*:", self.s["baseline_signature"]))
+        for c in dd["clocks"]:
+            if c.get("port") and c["port"] not in ports and not dd.get("sdc"):
+                # An unbound create_clock would leave synthesis unconstrained.
+                self.s["error"] = (f"clock port {c['port']!r} is not an input of top module {self.s['top']!r} "
+                                   f"(inputs: {sorted(ports)}); fix clocks[].port or supply an SDC")
+                self.log(self.s["error"])
+                return "failed"
         if missing:
             self.s["error"] = "missing required capabilities: " + "; ".join(missing)
             self.log(self.s["error"])

@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+cff-version: 1.2.0
+message: "If you use Cedar, please cite the ICCAD 2026 paper below."
+type: software
+title: Cedar
+authors: &authors
+  - family-names: Zhang
+    given-names: Niansong
+  - family-names: Deng
+    given-names: Chenhui
+  - family-names: Kuehn
+    given-names: Johannes Maximilian
+  - family-names: Ho
+    given-names: Chia-Tung
+  - family-names: Yu
+    given-names: Cunxi
+  - family-names: Zhang
+    given-names: Zhiru
+  - family-names: Khailany
+    given-names: Brucek
+repository-code: "https://github.com/cornell-zhang/Cedar"
+license: Apache-2.0
+preferred-citation:
+  type: conference-paper
+  title: "Cedar: Learning to Optimize RTL via Accumulating Verified Rewrite Rules"
+  authors: *authors
+  collection-title: "Proceedings of the IEEE/ACM International Conference on Computer-Aided Design"
+  year: 2026
+  doi: "10.1145/3831252.3834087"
+  url: "https://doi.org/10.1145/3831252.3834087"

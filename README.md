@@ -124,6 +124,25 @@ repository [`iccad26-cedar-artifacts`](https://github.com/zzzDavid/iccad26-cedar
 (access may be restricted until it is published); this repository contains the
 implementation only.
 
+## Citation
+
+If you use Cedar in your research, please cite our ICCAD 2026 paper:
+
+```bibtex
+@inproceedings{zhang2026cedar,
+  author    = {Zhang, Niansong and Deng, Chenhui and Kuehn, Johannes Maximilian and Ho, Chia-Tung and Yu, Cunxi and Zhang, Zhiru and Khailany, Brucek},
+  title     = {{Cedar}: Learning to Optimize {RTL} via Accumulating Verified Rewrite Rules},
+  booktitle = {Proceedings of the IEEE/ACM International Conference on Computer-Aided Design},
+  series    = {ICCAD '26},
+  year      = {2026},
+  doi       = {10.1145/3831252.3834087},
+  url       = {https://doi.org/10.1145/3831252.3834087}
+}
+```
+
+The entry is also available in [`citation.bib`](citation.bib). GitHub's citation
+metadata is provided in [`CITATION.cff`](CITATION.cff).
+
 ## License
 
 Apache License 2.0 (see `LICENSE`). Third-party components and their licenses

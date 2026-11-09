@@ -1,9 +1,8 @@
 # Third-party notices
 
 Cedar is licensed under the Apache License 2.0 (see [`LICENSE`](LICENSE)).
-Cedar's Python workflow, verification utilities, EDA harness
-scripts and egglog templates build on the CEDAR workflow and are provided under
-Apache-2.0. Their SPDX license identifiers are retained.
+Cedar's Python workflow, verification utilities, EDA harness scripts and egglog
+templates are provided under Apache-2.0. Their SPDX license identifiers are retained.
 
 The source repository and the `cedar-toolchain` binary distribution include or
 are built from the following third-party components. Exact revisions are in

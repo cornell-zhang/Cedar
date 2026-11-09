@@ -84,6 +84,23 @@ _ABS_DEV_PATH = r"(/[A-Za-z0-9_.-]+){2,}"
 
 
 def _edit_dialegg(root: Path) -> None:
+    demo = root / "test/anywidth_int/run_extract_translate.sh"
+    demo.write_text(re.sub(
+        r'^design_name="[A-Z]+_DESIGN_NAME"$',
+        'design_name="CEDAR_DESIGN_NAME"', demo.read_text(), flags=re.M,
+    ))
+    for rel in ["test/reconstruct_synthetic_nodes/Inputs/circt.egg",
+                "test/replacement/circt.egg"]:
+        f = root / rel
+        f.write_text(re.sub(
+            r"^[A-Z]+_REWRITE_RULES$", "CEDAR_REWRITE_RULES", f.read_text(), flags=re.M,
+        ))
+    regression = root / "test/reconstruct_opaque_region_capture/accumulator_opaque_capture_cfbr_test.mlir"
+    regression.write_text(re.sub(
+        r"^(// accumulator leaf cf.br bb-arg type mismatch \(compiler-source, )[A-Z]+ ticket$",
+        r"\1CEDAR ticket", regression.read_text(), flags=re.M,
+    ))
+
     for rel in _HEADER_NORMALIZATION_FILES:
         f = root / rel
         if f.is_file():

@@ -18,21 +18,26 @@ part of the repository.
 
 | Check | Result |
 | --- | --- |
-| Container build (`toolchain/build/Dockerfile`, manylinux_2_28, `--no-cache`, JOBS=32) | pass, 23 min (LLVM 868 s, CIRCT 210 s, egglog 43 s, DialEgg 25 s, extraction-gym 13 s) |
-| Native build from the release source bundle, **without network access** (JOBS=24, host GCC 13, cmake 4.1, cargo 1.87) | pass, 31 min under concurrent load |
+| Container build (`toolchain/build/Dockerfile`, manylinux_2_28, JOBS=32), from scratch | pass, 23 min first build (LLVM 868 s, CIRCT 210 s); final rebuild 17 min (LLVM 657 s, CIRCT 196 s, egglog 38 s, DialEgg 22 s, extraction-gym 11 s) |
+| Native build from the release source bundle, **without network access** (`unshare -rn`; JOBS=24, host GCC 13, cmake 4.1, cargo 1.87) | pass, 31 min under concurrent load |
 | ABI policy (`check_abi.py`) on both builds | pass: only manylinux-allowlisted libraries, GLIBC <= 2.28, no RUNPATH |
 | Toolchain smoke test (RTL -> e-graph -> Verilog -> circt-lec + Z3) on both builds | pass (equivalence proved) |
 | `cedar-toolchain` wheel (`check_wheel.py`): files, licenses, manifest hashes vs. binaries and lockfile, platform tag, content scan | pass |
 | `cedar-workflow` wheel and sdist: path allowlist, content scan | pass |
 
-## Tests (`pytest`, 44 tests)
+## Tests (`pytest`)
 
 | Environment | Result |
 | --- | --- |
-| editable checkout, Python 3.13, container-built prefix | pass |
-| editable checkout, native-built prefix | pass |
-| fresh venv from the wheels (Python 3.11, toolchain from the `cedar-toolchain` wheel), tests from the sdist | pass |
-| fresh venv in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28, Python 3.9) | pass |
+| repository checkout (editable install, Python 3.13), container-built toolchain prefix | 50 passed |
+| repository checkout, toolchain prefix built natively from the source bundle | passed (see build section) |
+| fresh venv from the final wheels (Python 3.11, toolchain from the `cedar-toolchain` wheel), tests from the sdist | 49 passed, 1 skipped (example templates need the checkout) |
+| fresh venv in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28, Python 3.9), final wheels | 49 passed, 1 skipped; `cedar example open` passes |
+
+Toolchain-dependent tests run the real binaries: the weighted cost model must
+flip the real extractor's choice, the extractor must be deterministic on an
+e-graph that exposed nondeterminism before, and circt-lec + Z3 must prove and
+refute equivalence. Engine tests stub only the commercial EDA stages.
 
 ## Agent hosts
 
@@ -49,14 +54,37 @@ part of the repository.
 Each run: baseline DC + Innovus + SDF gate-level activity + PrimeTime(SAIF),
 agent direct rewrite, agent rule, Z3 admission, equality saturation, weighted
 extraction, Conformal check of every candidate against the original RTL, full
-PPA of every verified candidate, frontier report.
+PPA of every verified candidate, frontier report. Profiles and run
+directories were outside the repository; profiles were created through the
+guided setup.
 
-| Run | Wall clock | Result |
-| --- | --- | --- |
-| Claude Code, editable install, `--plugin-dir` | 5 min 04 s (agent session 5 min 20 s) | completed; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; agent rule proved at 1/8/16 bits (did not match this design; seed rules applied) |
-| Codex, installed plugin, seed rules disabled | 6 min 54 s (session 7 min 40 s) | completed; the agent's own rule proved at 1/8/16 bits and drove saturation; extracted candidate Conformal PASS: area -37.5%, power -22.5%, delay +24.5% |
-| Claude Code, fresh wheel environment, clean plugin export | completed; contract met (session time inflated by an agent restart after a tool timeout and concurrent load; not a timing reference) |
-| Negative check: deliberately wrong direct rewrite | Conformal FAIL (15 non-equivalent points); candidate excluded and never measured; run completed |
+**Final release runs** (final wheels in a fresh environment; plugins loaded
+from a clean export of the release commit):
+
+| Host | Run wall clock | Agent session | Result |
+| --- | --- | --- | --- |
+| Claude Code (`--plugin-dir`) | 5 min 06 s | 5 min 28 s | completed, contract met; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; agent rule proved at 1/8/16 bits |
+| Codex (installed plugin) | 6 min 06 s | 7 min 04 s | completed, contract met; identical extracted result (deterministic extraction) |
+
+Both runs measured the same baseline (893.7 um2, 0.661 ns, 229.6 uW) and the
+same extracted candidate (551.5 um2, 0.678 ns, 160.1 uW). Phase times of the
+Claude run: baseline 102 s, direct-candidate verification + synthesis preview
+39 s, e-graph iteration incl. verification and parallel full-PPA measurement of
+both candidates 131 s, agent tasks 7 s and 11 s.
+
+**Earlier runs during development** (same flow, earlier package revisions):
+Claude Code with an editable install (5 min 04 s), Codex with seed rules
+disabled so that only the agent's own rule drove saturation (6 min 54 s;
+extracted candidate Conformal PASS), Claude Code from wheels (completed; slow
+session because the agent restarted after a tool timeout — this led to
+`cedar run wait`), and a negative check where a deliberately wrong direct
+rewrite failed Conformal (15 non-equivalent points), was excluded and never
+measured.
+
+Measured per-stage times for one candidate on this machine: DC 12-17 s,
+Innovus 72-111 s, activity simulation 5-6 s, PrimeTime 9-11 s, Conformal
+1-30 s (license checkout dominates the first call). The quick test meets the
+initial <= 10 min target; most of the time is P&R.
 
 ## Loop regression (reduced paper preset, unattended `--agent-cmd "claude -p ..."`)
 
@@ -72,11 +100,6 @@ extracted candidate). The agent's proposed rule exposed a certifier bug
 (vector element reads in rule actions were not counted toward the arity guard);
 after the fix the rule is proved at 1 and 8 bits and is UNKNOWN (Z3 timeout,
 not admitted) at 16 bits — see `tests/test_certify.py`.
-
-Measured per-stage times for one candidate on this machine: DC 12-17 s,
-Innovus 72-111 s, activity simulation 5-6 s, PrimeTime 10-11 s, Conformal
-~30 s. The quick test meets the initial <= 10 min target; most of the time is
-P&R and the two agent tasks.
 
 ## Independent code review
 

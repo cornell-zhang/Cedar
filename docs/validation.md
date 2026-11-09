@@ -20,6 +20,7 @@ part of the repository.
 | --- | --- |
 | Container build (`toolchain/build/Dockerfile`, manylinux_2_28, JOBS=32), from scratch | pass, 23 min first build (LLVM 868 s, CIRCT 210 s); final rebuild 17 min (LLVM 657 s, CIRCT 196 s, egglog 38 s, DialEgg 22 s, extraction-gym 11 s) |
 | Native build from the release source bundle, **without network access** (`unshare -rn`; JOBS=24, host GCC 13, cmake 4.1, cargo 1.87) | pass, 31 min under concurrent load |
+| Release source bundle regenerated from the release commit (`make_source_bundle.py`) | dependency and vendored-crate tree hashes identical to the bundle used for the offline native build; Cedar snapshot = release commit |
 | ABI policy (`check_abi.py`) on both builds | pass: only manylinux-allowlisted libraries, GLIBC <= 2.28, no RUNPATH |
 | Toolchain smoke test (RTL -> e-graph -> Verilog -> circt-lec + Z3) on both builds | pass (equivalence proved) |
 | `cedar-toolchain` wheel (`check_wheel.py`): files, licenses, manifest hashes vs. binaries and lockfile, platform tag, content scan | pass |
@@ -29,15 +30,19 @@ part of the repository.
 
 | Environment | Result |
 | --- | --- |
-| repository checkout (editable install, Python 3.13), container-built toolchain prefix | 68 passed |
+| repository checkout (editable install, Python 3.13), container-built toolchain prefix | 114 passed |
 | repository checkout, toolchain prefix built natively from the source bundle | passed (see build section) |
-| fresh venv from the final wheels (Python 3.11, toolchain from the `cedar-toolchain` wheel), tests from the sdist | 67 passed, 1 skipped (example templates need the checkout) |
-| fresh venv in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28, Python 3.9), final wheels | 67 passed, 1 skipped |
+| fresh venv from the final wheels (Python 3.11, toolchain from the `cedar-toolchain` wheel), tests from the sdist | 113 passed, 1 skipped (example templates need the checkout) |
+| fresh venv in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28, Python 3.9), final wheels | 113 passed, 1 skipped |
 
 Toolchain-dependent tests run the real binaries: the weighted cost model must
 flip the real extractor's choice, the extractor must be deterministic on an
 e-graph that exposed nondeterminism before, and circt-lec + Z3 must prove and
-refute equivalence. Engine tests stub only the commercial EDA stages.
+refute equivalence. Engine tests stub only the commercial EDA stages, or
+replace the EDA tools by stand-ins that emit the real tools' message formats
+(`tests/fake_eda.py`); process-cleanup tests spawn real child processes. The
+compiler toolchain and its wheel were not rebuilt for the review fixes: no
+toolchain input changed after the final toolchain build.
 
 ## Agent hosts
 
@@ -58,22 +63,35 @@ PPA of every verified candidate, frontier report. Profiles and run
 directories were outside the repository; profiles were created through the
 guided setup.
 
-**Release runs** (after the third review's fixes; final wheels in a fresh
-environment; plugins loaded from a clean export of the release commit):
+**Release runs** (final package; fresh environment from the final wheels;
+plugins loaded from a clean export of the release commit; the run budget,
+measurement gates and process-group cleanup active):
 
 | Host | Run wall clock | Agent session | Result |
 | --- | --- | --- | --- |
-| Claude Code (`--plugin-dir`) | 4 min 57 s | 5 min 13 s | completed, contract met, iteration successful; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; the agent's (true) rule was refuted because its premises were not written as `(= ?var term)` (that verifier dropped such premises; it is now rejected up front, see the fourth review) |
-| Codex (installed plugin) | 5 min 19 s | 5 min 59 s | completed, contract met; identical extracted result; agent rule proved at 1/8/16 bits |
+| Claude Code (`--plugin-dir`) | 5 min 03 s | 5 min 23 s | completed, contract met, iteration successful; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; the agent's rule proved at 1/8/16 bits |
+| Codex (installed plugin) | 5 min 34 s | 6 min 33 s | completed, contract met; identical extracted result; agent rule proved at 1/8/16 bits |
+| Unattended (`cedar run start --agent-cmd "claude -p ..." --run-timeout-s 1500`) | 5 min 26 s | — | completed, contract met; both agent tasks accepted after a zero exit on the first attempt; agent rule proved at 1/8/16 bits |
 
-Earlier release-candidate runs of the same flow: 6 min 58 s / 5 min 59 s
-(Claude / Codex, after the second review) and a negative check in which a
-deliberately wrong direct rewrite got Conformal exit 16, was excluded and never
-measured.
+Every stage of these runs recorded its gate evidence: DC/PrimeTime without
+error messages, Innovus with only the profile-accepted `IMPTR-2101` (in
+`power_route`), the post-route SPEF loaded with 100% of internal nets
+annotated, SAIF 100% of nets, and a completed SDF annotation of `Top.DUT`.
 
-Both host runs measured the same baseline (893.7 um2, 0.661 ns, 229.6 uW) and
+Runs of the same flow after each review round, all completed with the
+contract met (run wall clock Claude / Codex): 5 min 06 s / 5 min 37 s after
+the vector-cardinality fix, 5 min 00 s / 5 min 37 s after the nested-operand
+fix, 4 min 58 s / 5 min 56 s after the measurement gates, 5 min 18 s /
+6 min 13 s after the run budget; in two of them an
+agent's otherwise correct rule was rejected for `(let ?x ...)`, which led to
+the prompt fix. Earlier release-candidate runs: 4 min 57 s / 5 min 19 s
+(third review), 6 min 58 s / 5 min 59 s (second review), and a negative check
+in which a deliberately wrong direct rewrite got Conformal exit 16, was
+excluded and never measured.
+
+All these runs measured the same baseline (893.7 um2, 0.661 ns, 229.6 uW) and
 the same extracted candidate (551.5 um2, 0.678 ns, 160.1 uW). Phase times of
-the Codex run: baseline ~100 s, direct-candidate verification + synthesis
+a Codex run: baseline ~100 s, direct-candidate verification + synthesis
 preview ~40 s, e-graph iteration incl. verification and parallel full-PPA
 measurement of both candidates ~130 s; agent tasks 33 s and 42 s. Before the
 gate fixes the same flow measured 5 min 06 s (Claude) and 6 min 26 s (Codex);

@@ -47,7 +47,7 @@ QUESTIONS: List[Dict] = [
             "equivalence (Conformal). Also ask for per-stage timeouts if the defaults (3600 s) are unsuitable."},
     {"id": "toolchain_prefix", "layer": "tools",
      "ask": "Use the installed cedar-toolchain wheel (default) or a native build prefix (path with bin/ and share/cedar/)?"},
-    {"id": "technology_name", "layer": "technology", "ask": "Name for the technology profile (e.g. 'asap7-rvt-tt')?"},
+    {"id": "technology_name", "layer": "technology", "ask": "Name for the technology profile (e.g. 'mypdk-tt')?"},
     {"id": "time_unit", "layer": "technology", "ask": "Library time unit used in SDC and timing reports: ps or ns?"},
     {"id": "corners", "layer": "technology",
      "ask": "For each PVT corner: Synopsys .db files, Liberty .lib files, Verilog cell models for gate-level "

@@ -1,0 +1,33 @@
+# Paper-to-code matrix
+
+How each method element of the Cedar paper maps to this release. "Release
+addition" marks behaviour implemented for the open-source release; it does not
+establish which features historical paper experiments exercised (archived
+evidence lives in the separate artifact repository). "Release change" marks a
+deliberate difference from the paper's experimental setup.
+
+| # | Paper element | Release implementation | Tests / evidence | Status |
+| --- | --- | --- | --- | --- |
+| A1 | Weighted node cost `alpha*area(n)+beta*delay(n)+gamma*power(n)` driving extraction; weight variation | `cedar/egraph/costmodel.py` (per-node feature estimates, documented scales, scalarization written into the e-graph consumed by `extract_result`); `cedar/objective.py` (design-level weighted score, presets, normalization, timing feasibility, weight schedules; objective text in every prompt) | `tests/test_costmodel.py` (weights flip the real extractor's choice), `tests/test_metrics_objective_frontier.py` | Release addition. Node features are **estimates** (docs/cost-model.md); the delay term is not a critical-path model. |
+| A2 | Netlist-to-e-node correspondence, shared-gate power apportionment, critical-partition feedback | `cedar/attribution.py` (DC operator names / cross-probing -> RTL line -> e-node tokens; per-cell area and PrimeTime cell power; equal split of shared cells; coverage; critical-path operators; calibration fed to the next iteration's costs) | `tests/test_parsers_attribution.py`; local quick runs report >98% area/power coverage on the example | Release addition with documented approximations (equal split within a line, token-level identification, P&R-inserted cells unattributed). |
+| A3 | Z3 verification before rule-pool admission | `cedar/rules/certify.py` + `cedar/rules/z3verify.py`; engine phase `rules_admit` admits only `PROVED` instances (generated, seed and user-pool rules alike); structured statuses PROVED/REFUTED/UNKNOWN/UNSUPPORTED/REJECTED | `tests/test_certify.py` | Release addition (the historical entry point did not call the verifier). |
+| A4 | Concrete-width guards, re-verification at new widths | per-width specialization (type variable -> concrete type = application guard), exact-width proofs, certificates keyed by rule hash + width + verifier hash, no capped-width inference, `max_width`, operand-width and vector-arity guards | `tests/test_certify.py` (`a*b+a*c -> a*(b-c)` proved at 1 bit, refuted at 8; edits force re-proof) | Release addition. Rules relating several widths are unsupported (rejected) in v0.1. |
+| A5 | Candidate correctness via cycle-accurate simulation or equivalence miter | `cedar/verification.py`: Conformal (original RTL as golden), self-checking simulation, circt-lec + Z3 miter (combinational); passed/failed/unavailable/error, fail-closed; activity testbenches separated from checking testbenches | `tests/test_parsers_attribution.py`, `tests/test_open_flow.py`, `tests/test_config.py` | Release addition (historical simulate step passed when no testbench existed). |
+| A6 | Direct rewrites inform rule discovery | `propose_rules` task includes original RTL, verified diffs, post-synthesis PPA deltas, verification evidence, objective | engine `_direct_evidence`; local runs | Implemented. |
+| A7 | Applicability, cross-design per-rule history, >=1% prioritization, new-e-node checks, complementary combinations | `cedar/selection.py` (JSONL history of combinations with design features/technology/clock/objective; prioritization >= 1%; complementary operator coverage); engine `probe` phase (per-instance egglog matches and new e-nodes) | `tests/test_selection_presets_tasks.py` | Release addition. Combination outcomes are never attributed to individual rules. |
+| A8 | Joint search, Pareto frontier | `cedar/frontier.py` (one verified frontier seeded with baseline, direct and extracted points; membership-based change detection; explicit non-dominated points in `report.json`); objective-based guidance | `tests/test_metrics_objective_frontier.py` | Release fix of length-only improvement detection and inconsistent stagnation counting. |
+| A9 | Measurement integrity | `cedar/metrics.py` (units, stage, source, validity, explicit nulls), report parsers with completion markers, SAIF annotation >= 90% requirement, unit-explicit prompts | `tests/test_metrics_objective_frontier.py`, `tests/test_parsers_attribution.py` | Release fix (historical code encoded missing metrics as 0 and mislabeled uW as mW). |
+| A10 | (not in paper) DC pre-P&R pruning | `measurement.approximate_pruning` (default off); pruned candidates are recorded as unmeasured and never enter the frontier | `cedar/measure.py` | Release change: heuristic is opt-in and labeled. |
+| A11 | >=3 cost configurations, >=3 rule combinations, >=10 iterations, separate models per stage | `cedar/workflow/presets.py` (`paper` preset; contract `met`/`incomplete` in every report; distinct *numerical* cost configurations), `agent.stage_models` recorded in provenance; any host/model allowed | `tests/test_selection_presets_tasks.py` | Implemented; `quick` is a labeled smoke preset, not the paper setting. |
+| A12 | Design input and constraints; no-retiming boundary | `cedar/config/specs.py` design schema (multi-file RTL, includes, defines, explicit clocks/resets, user SDC for multi-clock, generated SDC binds the declared clock port); direct-rewrite prompt forbids latency changes unless `search.allow_latency_change`; port-list check on submissions | `tests/test_config.py` | Implemented. **Release change:** automatic shmoo/frequency search removed; the timing goal is explicit. The paper's hierarchical accumulator driver is not shipped (docs/workflow.md). |
+
+## Preserved behaviour from the working implementation
+
+Direct RTL generation, reusable rule files, equality saturation through
+DialEgg/egglog, scalar node-cost patching (now from the weighted feature
+model), CIRCT reconstruction with agent fallback, aggregate 3-D PPA feedback,
+three-axis dominance, and the DC -> Innovus -> SDF simulation -> SAIF ->
+PrimeTime pipeline. The Z3 verifier is the historical one, used as a library
+with stricter admission rules. Differences in the measurement flow: one DC
+netlist now feeds P&R and power (historically the power flow re-synthesized),
+and all stages read one shared SDC.

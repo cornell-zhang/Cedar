@@ -41,6 +41,7 @@ def resolve(search_cfg: Dict) -> Dict:
     if out["min_iterations"] > out["max_iterations"]:
         raise ValueError("search.min_iterations exceeds search.max_iterations")
     out.setdefault("allow_latency_change", False)
+    out.setdefault("seed_rules", True)
     return out
 
 

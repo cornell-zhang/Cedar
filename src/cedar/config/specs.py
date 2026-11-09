@@ -186,6 +186,7 @@ DESIGN = {
         "eqsat_iterations": F("int", min=1, doc="egglog run iterations (omit = saturate)"),
         "eqsat_timeout_s": F("int", min=1),
         "allow_latency_change": F("bool", default=False, doc="permit pipeline/retiming rewrites (off: no-retiming mode)"),
+        "seed_rules": F("bool", default=True, doc="include Cedar's shipped seed rule library in the rule pool"),
     }),
     "agent": F("obj", fields={
         "stage_models": F("map", item=F("str"), default={},

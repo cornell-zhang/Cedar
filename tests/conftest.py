@@ -19,5 +19,13 @@ def toolchain():
 
 @pytest.fixture(scope="session")
 def template_sigs():
+    """Operator signatures from the repo template, else the selected toolchain."""
     from cedar.rules import certify
-    return certify.signatures_from_template((ROOT / "toolchain" / "templates" / "circt.egg").read_text())
+    from cedar.toolchain import ToolchainError, resolve
+    tmpl = ROOT / "toolchain" / "templates" / "circt.egg"
+    if tmpl.is_file():
+        return certify.signatures_from_template(tmpl.read_text())
+    try:
+        return certify.signatures_from_template(resolve().template("circt.egg").read_text())
+    except ToolchainError:
+        return certify.signatures_from_template(None)

@@ -1,0 +1,5 @@
+# Explicit source-distribution contents (cedar-workflow). Everything not listed
+# here or declared as package data is excluded.
+include README.md LICENSE THIRD_PARTY_NOTICES.md pyproject.toml
+recursive-include tests *.py
+global-exclude __pycache__ *.py[cod] *.log *.yaml *.yml

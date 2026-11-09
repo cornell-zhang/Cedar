@@ -523,9 +523,10 @@ class Run:
 
     def _pool_rules(self) -> Dict[str, str]:
         rules: Dict[str, str] = {}
-        for f in sorted(resources.files("cedar").joinpath("data/rules").iterdir(), key=lambda x: x.name):
-            if f.name.endswith(".egg"):
-                rules[normalize_rule_name(f.name)] = f.read_text()
+        if self.settings.get("seed_rules", True):
+            for f in sorted(resources.files("cedar").joinpath("data/rules").iterdir(), key=lambda x: x.name):
+                if f.name.endswith(".egg"):
+                    rules[normalize_rule_name(f.name)] = f.read_text()
         pool = cfgmod.state_home() / "rule-pool"
         if pool.is_dir():
             for f in sorted(pool.glob("*.egg")):
@@ -920,6 +921,13 @@ class Run:
         self.s["attribution"] = {"per_candidate": out, "calibration": calib}
         return "next"
 
+    def _task_timing(self) -> list:
+        out = []
+        for tid, t in self.s["tasks"].items():
+            out.append({"task": tid, "kind": t["kind"], "agent": t.get("agent"), "attempts": t.get("attempts"),
+                        "status": t["status"], "wait_s": _seconds_between(t.get("created_at"), t.get("submitted_at"))})
+        return out
+
     def phase_report(self) -> str:
         fr = self._frontier()
         contract = self._contract()
@@ -951,12 +959,24 @@ class Run:
             "attribution": {k: {kk: vv for kk, vv in v.items() if kk != "per_enode"}
                             for k, v in (self.s.get("attribution", {}).get("per_candidate") or {}).items()},
             "toolchain": self.s["provenance"]["toolchain"],
+            "agent": self.s["provenance"].get("agent"),
             "timings_s": self.s["timings"],
+            "agent_tasks": self._task_timing(),
+            "wall_clock_s": _seconds_between(self.s["created_at"], now()),
         }
         (self.dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
         self.s["final_status"] = "completed" if contract["status"] == "met" else "incomplete"
         self.log(f"report: {self.dir / 'report.json'} — frontier {fr.names()}; contract {contract['status']}")
         return "next"
+
+
+def _seconds_between(a: Optional[str], b: Optional[str]) -> Optional[float]:
+    if not a or not b:
+        return None
+    try:
+        return (datetime.fromisoformat(b) - datetime.fromisoformat(a)).total_seconds()
+    except ValueError:
+        return None
 
 
 _SIG_RE = re.compile(r"hw\.module\s+@(\S+)\((.*?)\)\s*(?:attributes|\{)", re.S)

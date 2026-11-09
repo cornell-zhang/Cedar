@@ -8,10 +8,11 @@ from cedar.cli import main
 from cedar.verification import check
 
 
-def test_open_example(tmp_path, toolchain, monkeypatch):
-    monkeypatch.setenv("CEDAR_TOOLCHAIN_PREFIX", str(toolchain.bin_dir.parent))
-    assert main(["example", "open", "--output-dir", str(tmp_path), "--toolchain-prefix",
-                 str(toolchain.bin_dir.parent)]) == 0
+def test_open_example(tmp_path, toolchain):
+    # A prefix toolchain (bin/ + share/cedar/) is passed explicitly; the wheel
+    # toolchain is found through the installed cedar_toolchain package.
+    sel = ["--toolchain-prefix", str(toolchain.bin_dir.parent)] if toolchain.bin_dir.name == "bin" else []
+    assert main(["example", "open", "--output-dir", str(tmp_path)] + sel) == 0
     res = json.loads(next(tmp_path.glob("open-example-*/result.json")).read_text())
     assert res["passed"]
     for r in res["results"].values():

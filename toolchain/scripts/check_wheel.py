@@ -44,7 +44,7 @@ BINARY_ALLOW = [re.compile(rb"/home/[a-z][a-z0-9_-]+/\.cargo/registry")]
 WORKFLOW_ALLOWED = re.compile(
     r"^(cedar/.*\.(py|md|tcl|v|egg|json|typed)|cedar_workflow-[^/]+\.dist-info/.*|"
     r"cedar_workflow-[^/]+/(src/cedar/.*|src/cedar_workflow\.egg-info/.*|pyproject\.toml|README\.md|LICENSE|"
-    r"THIRD_PARTY_NOTICES\.md|PKG-INFO|setup\.cfg|MANIFEST\.in))$")
+    r"THIRD_PARTY_NOTICES\.md|PKG-INFO|setup\.cfg|MANIFEST\.in|tests/[A-Za-z0-9_]+\.py))$")
 
 
 def _scan(name: str, data: bytes, is_binary: bool) -> list:

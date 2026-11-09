@@ -406,3 +406,92 @@ def test_run_expiring_during_rule_admission_fails(tmp_path, toolchain, monkeypat
     assert time.monotonic() - t0 < 30
     assert run.s["expired"]["during"] == "rules_admit"
     assert E.Run(run.dir).advance() == "failed"                  # sticky
+
+
+# ------------------------------------------- standalone `cedar task submit`
+
+def _slow_frontend_prefix(tmp_path, toolchain, body):
+    """A toolchain prefix whose circt-verilog runs `body` first (real tool after)."""
+    import shlex
+    if toolchain.bin_dir.name != "bin":
+        pytest.skip("needs a prefix toolchain to wrap circt-verilog")
+    from cedar.toolchain import resolve
+    prefix = tmp_path / "slow-prefix"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "share").symlink_to(toolchain.share_dir.parent)
+    for p in toolchain.bin_dir.iterdir():
+        if p.name != "circt-verilog":
+            (prefix / "bin" / p.name).symlink_to(p)
+    w = prefix / "bin" / "circt-verilog"
+    w.write_text(f"#!/bin/sh\n{body}\nexec {shlex.quote(toolchain.tool('circt-verilog'))} \"$@\"\n")
+    w.chmod(0o755)
+    return resolve(str(prefix))
+
+
+def _pending_with_outputs(run):
+    t = run.pending_task()
+    for o in t.outputs:
+        Path(o.path).write_text(VARIANT if o.kind == "verilog" else '{"variants": []}')
+    return t
+
+
+def test_standalone_submit_validation_is_bounded_by_the_budget(tmp_path, toolchain, monkeypatch):
+    from cedar.cli import main
+    from cedar.workflow import engine as E
+    flag, pidf = tmp_path / "slow", tmp_path / "child.pid"
+    tc = _slow_frontend_prefix(tmp_path, toolchain,
+                               f'if [ -e "{flag}" ]; then sleep 30 & echo $! > "{pidf}"; wait; fi')
+    run = _run(tmp_path, tc, monkeypatch)
+    assert run.advance() == "awaiting_agent"
+    t = _pending_with_outputs(run)
+    flag.touch()                                                  # the frontend now needs 30 s
+    run.s["budget"]["deadline_epoch"] = time.time() + 1.0
+    run.save()
+    monkeypatch.delenv("CEDAR_TOOLCHAIN_PREFIX", raising=False)
+    t0 = time.monotonic()
+    rc = main(["task", "submit", "--run", str(run.dir), t.id])
+    assert rc != 0 and time.monotonic() - t0 < 10                 # not the 30 s / 300 s frontend
+    assert proc.deadline() is None                                # standalone: nothing left installed
+    assert _gone(int(pidf.read_text()))                           # the frontend's child was terminated
+    s = E.Run(run.dir).s
+    assert s["tasks"][t.id]["status"] == "pending"                # never accepted
+    assert s["status"] == "failed" and s["expired"]["during"] == f"task {t.id} validation"
+    assert main(["run", "continue", "--run", str(run.dir), "--retry"]) != 0
+    assert E.Run(run.dir).s["status"] == "failed"
+
+
+def test_no_acceptance_once_the_budget_expired(tmp_path, toolchain, monkeypatch):
+    from cedar.cli import main
+    from cedar.workflow import engine as E
+    calls = tmp_path / "frontend-calls"
+    tc = _slow_frontend_prefix(tmp_path, toolchain, f'echo x >> "{calls}"')
+    run = _run(tmp_path, tc, monkeypatch)
+    assert run.advance() == "awaiting_agent"
+    t = _pending_with_outputs(run)
+    n = calls.read_text().count("x") if calls.exists() else 0
+    run.s["budget"]["deadline_epoch"] = time.time() - 1
+    run.save()
+    monkeypatch.delenv("CEDAR_TOOLCHAIN_PREFIX", raising=False)
+    assert main(["task", "submit", "--run", str(run.dir), t.id]) != 0
+    assert (calls.read_text().count("x") if calls.exists() else 0) == n   # no validation process started
+    s = E.Run(run.dir).s
+    assert s["tasks"][t.id]["status"] == "pending" and s["status"] == "failed" and s["expired"]
+    assert proc.deadline() is None
+
+
+def test_submit_restores_an_enclosing_deadline(tmp_path, toolchain, monkeypatch):
+    run = _run(tmp_path, toolchain, monkeypatch)
+    assert run.advance() == "awaiting_agent"
+    t = _pending_with_outputs(run)
+    outer = time.time() + 300.0                                   # e.g. advance() running an unattended agent
+    proc.set_deadline(outer)
+    ok, msg = run.submit(t.id, {"host": "test"})
+    assert ok, msg
+    assert proc.deadline() == outer                               # restored, not cleared
+    # the tighter deadline wins: an enclosing deadline that already passed refuses the submission
+    t2 = run.s["tasks"][t.id]
+    t2["status"] = "pending"
+    run.save()
+    proc.set_deadline(time.time() - 1)
+    ok, msg = run.submit(t.id, {"host": "test"})
+    assert not ok and "budget" in msg and run.s["status"] == "failed"

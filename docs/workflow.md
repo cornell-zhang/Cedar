@@ -45,7 +45,10 @@ short by the budget yields no certificate or verdict. `cedar run continue` insta
 the persisted budget before anything else: an expired run fails without
 starting any process, and the resume checks (input fingerprints and tool
 identity probes, which run the setup script and the tools' version queries) are
-capped by the remaining budget. When the
+capped by the remaining budget. `cedar task submit` does the same: output
+validation (the frontend parses submitted Verilog) runs under the persisted
+deadline, outputs are accepted only if the budget has not expired by the end
+of validation, and a validation that runs into the budget fails the run. When the
 budget expires the run ends as `failed` with `expired` recorded: it cannot be
 continued (not even with `--retry`), task submissions are refused, nothing done
 under the expired budget earns successful-iteration credit, and a report

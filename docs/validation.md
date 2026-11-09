@@ -396,6 +396,25 @@ tests fail.
   (30 s) setup probes with 1 s of budget left (fails within seconds), and the
   lock/deadline state after each exit.
 
+## Eleventh review: standalone task submission
+
+* `cedar task submit` ran output validation outside `advance`, so no run
+  deadline was installed: the frontend parse of a submitted Verilog file had
+  its ordinary 300 s timeout, and a submission whose validation outlasted the
+  remaining budget was still accepted (reviewer: exit 0, ACCEPTED after
+  3.36 s with 1 s of budget left). `Run.submit` now installs the tighter of the
+  persisted run deadline and any enclosing deadline for the whole validation,
+  re-checks expiry before accepting, records a validation that runs into the
+  budget as the sticky `expired during task <id> validation`, and restores an
+  enclosing deadline (unattended submission inside `advance`) instead of
+  clearing it. The reviewer's reproduction now exits 1 after 1.16 s with the
+  task pending and the run failed.
+* Regressions drive the real `cedar task submit` CLI against a slow frontend
+  wrapper that spawns a child (child terminated, nothing accepted, run failed
+  and not revivable, no deadline left installed), an already expired run (no
+  validation process started) and an enclosing deadline (restored; the tighter
+  one wins).
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.

@@ -521,17 +521,42 @@ class Run:
         return None if n == 1 else f"expected exactly one rule form, found {n}"
 
     def submit(self, task_id: str, agent: Optional[Dict[str, str]] = None) -> Tuple[bool, str]:
+        """Validate and accept a task's outputs, within the run budget.
+
+        Output validation starts processes (the frontend parses submitted
+        Verilog), so the persisted run deadline is installed for its duration --
+        also for a standalone ``cedar task submit`` -- and the tighter of it and
+        an enclosing deadline (unattended submission inside ``advance``) applies.
+        The enclosing deadline is restored afterwards, never cleared.
+        """
         if task_id not in self.s["tasks"]:
             raise WorkflowError(f"unknown task {task_id}")
-        if self.s.get("expired") or self.budget_expired():
+        outer = procmod.deadline()
+        mine = self._deadline_epoch()
+        procmod.set_deadline(min((d for d in (outer, mine) if d is not None), default=None))
+        try:
+            return self._submit(task_id, agent)
+        finally:
+            procmod.set_deadline(outer)
+
+    def _submit(self, task_id: str, agent: Optional[Dict[str, str]]) -> Tuple[bool, str]:
+        expired_msg = "run budget expired; the run cannot accept further work"
+        if self.s.get("expired") or self.budget_expired() or procmod.expired():
             self._expire(self.s.get("expired", {}).get("during") or f"task {task_id}")
-            return False, "run budget expired; the run cannot accept further work"
+            return False, expired_msg
         t = Task.from_dict(self.s["tasks"][task_id])
         t.attempts += 1
         t.submitted_at = now()
         if agent:
             t.agent = {k: v for k, v in agent.items() if v}
-        problems = validate_outputs(t, self._check_verilog, self._check_egg)
+        try:
+            problems = validate_outputs(t, self._check_verilog, self._check_egg)
+        except procmod.DeadlineExpired:
+            problems = ["run budget expired during validation"]
+        if self.budget_expired() or procmod.expired():
+            # validation ran into the budget: nothing is accepted, the run fails (sticky)
+            self._expire(f"task {task_id} validation")
+            return False, expired_msg
         if problems:
             t.status, t.feedback = "pending", "; ".join(problems)
             self.s["tasks"][task_id] = t.to_dict()

@@ -140,6 +140,8 @@ def _normalize_development_notes(root: Path) -> None:
         ).replace("// fully unroll any", "// Fully unroll any").replace(
             "// a clocked FSM whose", "// A clocked FSM whose",
         )
+        text = re.sub(r", [A-Za-z0-9_.-]+#\d+(?=\))", "", text)
+        text = re.sub(r"\bsub-cluster [A-Z]+['’]*(?: follow-on)?", "regression", text)
         if f.name in {"EggifyOnlyPass.cpp", "ReconstructFromExtractionPass.cpp", "egg-opt.cpp"}:
             text = re.sub(r"^[ \t]+$", "", text, flags=re.M)
         f.write_text(text)

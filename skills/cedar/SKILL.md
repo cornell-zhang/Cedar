@@ -58,7 +58,9 @@ Task kinds and what matters:
 - **propose_rules** — write general egglog rules (one `rule` with one `union` per
   file) generalizing the verified direct rewrites. Use a single type variable for
   the width; guard every variadic operand vector you read with
-  `(= N (vec-length ?ops))`; no stateful ops. Cedar proves each rule with Z3 at
+  `(= N (vec-length ?ops))`; write every premise as `(= ?var term)` (variable on
+  the left; other forms are not used as proof assumptions); only `let` and one
+  `union` actions; no stateful ops. Cedar proves each rule with Z3 at
   every exact width it is applied to and rejects anything unproved.
 - **select_rules** (paper preset) — choose a complementary rule combination and
   optional per-constructor cost multipliers in [0.05, 20] as JSON.

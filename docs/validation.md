@@ -29,10 +29,10 @@ part of the repository.
 
 | Environment | Result |
 | --- | --- |
-| repository checkout (editable install, Python 3.13), container-built toolchain prefix | 60 passed |
+| repository checkout (editable install, Python 3.13), container-built toolchain prefix | 68 passed |
 | repository checkout, toolchain prefix built natively from the source bundle | passed (see build section) |
-| fresh venv from the final wheels (Python 3.11, toolchain from the `cedar-toolchain` wheel), tests from the sdist | 59 passed, 1 skipped (example templates need the checkout) |
-| fresh venv in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28, Python 3.9), final wheels | 59 passed, 1 skipped |
+| fresh venv from the final wheels (Python 3.11, toolchain from the `cedar-toolchain` wheel), tests from the sdist | 67 passed, 1 skipped (example templates need the checkout) |
+| fresh venv in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28, Python 3.9), final wheels | 67 passed, 1 skipped |
 
 Toolchain-dependent tests run the real binaries: the weighted cost model must
 flip the real extractor's choice, the extractor must be deterministic on an
@@ -58,14 +58,18 @@ PPA of every verified candidate, frontier report. Profiles and run
 directories were outside the repository; profiles were created through the
 guided setup.
 
-**Release runs** (after the second review's gate fixes; final wheels in a
-fresh environment; plugins loaded from a clean export of the release commit):
+**Release runs** (after the third review's fixes; final wheels in a fresh
+environment; plugins loaded from a clean export of the release commit):
 
 | Host | Run wall clock | Agent session | Result |
 | --- | --- | --- | --- |
-| Claude Code (`--plugin-dir`) | 6 min 58 s | 7 min 23 s | completed, contract met, iteration successful (verified + completely measured); extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; agent rule proved at 1/8/16 bits; the agent spent 132 s on the rule-proposal task |
-| Codex (installed plugin) | 5 min 59 s | 6 min 53 s | completed, contract met; identical extracted result (deterministic extraction); agent rule proved at 1/8/16 bits |
-| Negative check (wrong direct rewrite, agent role played manually) | — | — | Conformal exit 16, 15 non-equivalent points -> candidate `failed`, excluded, never measured |
+| Claude Code (`--plugin-dir`) | 4 min 57 s | 5 min 13 s | completed, contract met, iteration successful; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; the agent's (true) rule was refuted because its premises were not written as `(= ?var term)` (conservative, see limitations) |
+| Codex (installed plugin) | 5 min 19 s | 5 min 59 s | completed, contract met; identical extracted result; agent rule proved at 1/8/16 bits |
+
+Earlier release-candidate runs of the same flow: 6 min 58 s / 5 min 59 s
+(Claude / Codex, after the second review) and a negative check in which a
+deliberately wrong direct rewrite got Conformal exit 16, was excluded and never
+measured.
 
 Both host runs measured the same baseline (893.7 um2, 0.661 ns, 229.6 uW) and
 the same extracted candidate (551.5 um2, 0.678 ns, 160.1 uW). Phase times of
@@ -138,12 +142,32 @@ with regression tests before the release runs above:
   an earlier attempt) could be accepted; passes now require a successful
   process and fresh reports, and every EDA stage clears old outputs first.
 
+## Third review: proof symbols, instance integrity, frontier gate
+
+* Distinct egglog symbols could collide in the proof model (a user `?lhs` in a
+  `rewrite` vs. the desugaring's internal `?lhs`; a bare `let` name vs. a
+  `?`-variable of the same spelling; `?a` vs. `??a`), admitting false rules.
+  Rules are now alpha-renamed to collision-free identifiers before both proof
+  and execution; real-egglog regressions cover all three cases.
+* Persisted rule-instance files were applied without re-checking their
+  certificates; instances are now used only through the recorded admission
+  inventory (exact certified hash, current verifier identity or re-proof from
+  the recorded source, design width); edited, missing or unrecorded files stop
+  the run.
+* The published frontier did not use the candidate-validity predicate; changed
+  RTL or incomplete/failed measurements can no longer appear on the frontier
+  or influence direct-round convergence and agent feedback.
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.
 * Per-e-node features are estimates; attribution splits shared cells equally
   among the operator tokens of an RTL line (see `docs/cost-model.md`).
 * Rules that relate several bit widths are rejected by the certifier in v0.1.
+* The verifier uses only premises of the form `(= ?var term)` as assumptions;
+  other premises (e.g. `(= (vec-get ?v 0) ?x)`) are ignored, which can refute a
+  true rule (never admit a false one). Write premises with the variable on the
+  left.
 * `circt-lec` verification supports combinational designs only.
 * The hierarchical design accumulator driver from the paper's experiments is not part of
   this release.

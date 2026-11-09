@@ -2,8 +2,7 @@
 
 How each method element of the Cedar paper maps to this release. "Release
 addition" marks behaviour implemented for the open-source release; it does not
-establish which features historical paper experiments exercised (archived
-evidence lives in the separate artifact repository). "Release change" marks a
+establish which features historical paper experiments exercised. "Release change" marks a
 deliberate difference from the paper's experimental setup.
 
 | # | Paper element | Release implementation | Tests / evidence | Status |

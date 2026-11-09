@@ -119,11 +119,6 @@ Cedar does not search for a clock frequency: the timing goal is always yours.
 * [`docs/troubleshooting.md`](docs/troubleshooting.md)
 * [`docs/validation.md`](docs/validation.md) — what was tested for this release
 
-Archived experimental evidence for the paper lives in the separate artifact
-repository [`iccad26-cedar-artifacts`](https://github.com/zzzDavid/iccad26-cedar-artifacts)
-(access may be restricted until it is published); this repository contains the
-implementation only.
-
 ## Citation
 
 If you use Cedar in your research, please cite our ICCAD 2026 paper:

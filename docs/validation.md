@@ -4,6 +4,46 @@ Manually reviewed summary of the checks run for this release. Raw logs,
 profiles and run directories are private to the test machine and are not
 part of the repository.
 
+## Current source refresh (2026-11-09)
+
+The cleanup and optional hierarchy-preserving workflow were checked against
+the rebuilt DialEgg compiler, with unchanged pinned LLVM/CIRCT, egglog and
+extractor dependencies reused from the earlier validated builds:
+
+* Repository tests: **181 passed**.
+* Clean Python 3.11 environment, installed exclusively from refreshed wheels,
+  tests from the workflow sdist: **180 passed, 1 skipped** (checkout-only
+  example configuration).
+* Refreshed toolchain wheel, workflow wheel and workflow sdist: ABI,
+  binary/manifest hashes, licenses, package contents and private-data scans
+  passed. Compiler binaries have no runtime library search paths.
+* Re-importing the pinned DialEgg snapshot reproduces all **238** remaining
+  implementation files exactly. Design-derived regression inputs were replaced
+  by independent synthetic capture/type and mixed-clock/process regressions.
+* Hierarchy tests optimize two private child bodies independently, retain an
+  explicitly opaque child and all instances, and prove the assembled RTL
+  equivalent with `circt-lec`. Both the flat default and hierarchical option
+  exercise the real compiler, weighted extractor and reconstruction.
+* A fresh-wheel sequential hierarchical smoke run completed in **3 min 53 s**:
+  baseline and candidate synthesis, P&R, activity and power stages all passed;
+  Conformal proved the candidate equivalent (32 points), and the execution
+  contract was met. Two module definitions and their instance survived; the
+  arithmetic child went from two multipliers to one. Measured area decreased
+  45.9% and power 32.1%; delay increased 1.4% and met the 1.0 ns goal. This run
+  used the quick preset with shipped certified seed rules and no agent tasks
+  (`direct_variants: 0`, `rules_to_propose: 0`). It checks the optional compiler
+  path; the earlier runs below separately exercise agent integration.
+* Pinned dependency and vendored-crate source trees were hash-checked against
+  the earlier complete source bundle before reuse. The changed DialEgg sources
+  from the refreshed bundle built with networking disabled against cached
+  pinned LLVM/CIRCT libraries; all **19** hierarchy, opacity and open-flow
+  tests passed with that binary. The source bundle includes the current Cedar
+  snapshot and all pinned dependency sources and vendored crates.
+
+The build timings, 163-test counts and agent-host sessions in the remaining
+sections describe the earlier release candidates; they are historical evidence,
+not the current test count.
+
 ## Environment
 
 * Linux x86-64 (RHEL 8 family host); 144 cores shared with other users.
@@ -41,8 +81,9 @@ e-graph that exposed nondeterminism before, and circt-lec + Z3 must prove and
 refute equivalence. Engine tests stub only the commercial EDA stages, or
 replace the EDA tools by stand-ins that emit the real tools' message formats
 (`tests/fake_eda.py`); process-cleanup tests spawn real child processes. The
-compiler toolchain and its wheel were not rebuilt for the review fixes: no
-toolchain input changed after the final toolchain build.
+compiler toolchain and its wheel did not need rebuilding for those earlier
+workflow-only review fixes. The current refresh above includes a rebuilt
+DialEgg binary and refreshed templates and wheels.
 
 ## Agent hosts
 

@@ -54,8 +54,9 @@ hw.module @memory_wrapper(in %a : i4, out y : i4)
 }
 ```
 
-`cedar.blackbox` is a unit attribute, not a Boolean. Explicit opacity controls
-require `--hierarchical` and fail if used with flat emission. Opaque bodies are
+`cedar.blackbox` is a unit attribute, not a Boolean. The combined exporter's
+`--opaque-module` flag requires `--hierarchical`. A marked internal module
+cannot itself be selected for optimization. Opaque bodies are
 excluded from equality saturation and retained in the output MLIR; their
 interfaces appear as `Submodule` nodes. Internal modules are never classified
 from library prefixes or the contents of their bodies.

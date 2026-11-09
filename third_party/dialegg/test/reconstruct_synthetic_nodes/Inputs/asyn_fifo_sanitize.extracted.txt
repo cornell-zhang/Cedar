@@ -1,0 +1,1 @@
+(hw_output (seq_firreg (Value 1 (I8)) (OpVec (seq_to_clock (Value 0 (I1)) (OpaqueType "!seq.clock" "seq.clock"))) (AttrPairVec (NamedAttr "name" (StringAttr "dual_port_RAM/rdata"))) (I8)) (vec-empty))

@@ -1,0 +1,11 @@
+# Allowlist: only toolchain inputs are sent to the Docker build context.
+*
+!toolchain/sources.lock.json
+!toolchain/scripts/
+!toolchain/build/build-native.sh
+!toolchain/templates/
+!third_party/
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+**/__pycache__
+**/target

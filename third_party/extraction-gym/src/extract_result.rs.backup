@@ -1,0 +1,254 @@
+mod extract;
+
+use extract::*;
+use egraph_serialize::*;
+use ordered_float::NotNan;
+use anyhow::Context;
+use env_logger;
+
+pub type Cost = NotNan<f64>;
+pub const INFINITY: Cost = unsafe { NotNan::new_unchecked(std::f64::INFINITY) };
+
+fn main() {
+    env_logger::init();
+
+    let mut args = pico_args::Arguments::from_env();
+
+    let extractor_name: String = args
+        .opt_value_from_str("--extractor")
+        .unwrap()
+        .unwrap_or_else(|| "faster-greedy-dag".into());
+
+    let filename: String = args.free_from_str().unwrap();
+
+    let rest = args.finish();
+    if !rest.is_empty() {
+        panic!("Unknown arguments: {:?}", rest);
+    }
+
+    let egraph = EGraph::from_json_file(&filename)
+        .with_context(|| format!("Failed to parse {filename}"))
+        .unwrap();
+
+    let extractor = match extractor_name.as_str() {
+        "faster-greedy-dag" => extract::faster_greedy_dag::FasterGreedyDagExtractor.boxed(),
+        "faster-bottom-up" => extract::faster_bottom_up::FasterBottomUpExtractor.boxed(),
+        "bottom-up" => extract::bottom_up::BottomUpExtractor.boxed(),
+        #[cfg(feature = "ilp-cbc")]
+        "ilp-cbc-timeout" => extract::ilp_cbc::CbcExtractorWithTimeout::<10>.boxed(),
+        _ => panic!("Unknown extractor: {}", extractor_name),
+    };
+
+    let result = extractor.extract(&egraph, &egraph.root_eclasses);
+    result.check(&egraph);
+
+    // Perform topological sort on the extraction result
+    let mut sorted_nodes = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut temp_visited = std::collections::HashSet::new();
+    
+    // Topological sort using DFS
+    fn visit<'a>(
+        node_id: &NodeId,
+        egraph: &'a EGraph,
+        result: &ExtractionResult,
+        visited: &mut std::collections::HashSet<NodeId>,
+        temp_visited: &mut std::collections::HashSet<NodeId>,
+        sorted_nodes: &mut Vec<(NodeId, &'a Node)>,
+    ) -> Result<(), String> {
+        if temp_visited.contains(node_id) {
+            return Err("Cycle detected in the graph".to_string());
+        }
+        
+        if visited.contains(node_id) {
+            return Ok(());
+        }
+        
+        temp_visited.insert(node_id.clone());
+        
+        let node = &egraph[node_id];
+        
+        // Visit all children first
+        for child_id in &node.children {
+            // Get the class ID for the child node
+            let child_class_id = egraph.nid_to_cid(child_id);
+            // Look up the node ID chosen for this class
+            if let Some(child_node_id) = result.choices.get(child_class_id) {
+                visit(child_node_id, egraph, result, visited, temp_visited, sorted_nodes)?;
+            }
+        }
+        
+        // After all children are visited, add this node
+        temp_visited.remove(node_id);
+        visited.insert(node_id.clone());
+        sorted_nodes.push((node_id.clone(), node));
+        
+        Ok(())
+    }
+    
+    // Start DFS from each node in the extraction result
+    for (_class_id, node_id) in &result.choices {
+        if !visited.contains(node_id) {
+            if let Err(e) = visit(node_id, &egraph, &result, &mut visited, &mut temp_visited, &mut sorted_nodes) {
+                eprintln!("Warning: {}", e);
+            }
+        }
+    }
+    
+    // Reverse the sorted nodes to get the correct order (leaf nodes first)
+    sorted_nodes.reverse();
+
+    // Print the extraction result
+    // Collect all nodes and identify free variables
+    let mut free_variables = std::collections::HashSet::new();
+    
+    // First pass to identify free variables
+    for (_, node_id) in &result.choices {
+        let node = &egraph[node_id];
+        // Skip Var, Num, and primitive nodes
+        if node.op == "Var" || node.op == "Num" {
+            continue;
+        }
+        // Skip primitive nodes
+        if node_id.to_string().contains("primitive") {
+            continue;
+        }
+        free_variables.insert(node_id.clone().to_string().replace("-", "_"));
+    }
+    
+    // Print variable declarations
+    println!("// Variable declarations");
+    println!("// Assuming a parameter 'output_size' for bit width");
+    // Print free variable declarations
+    for var in &free_variables {
+        println!("wire [output_size-1:0] {};", var);
+    }
+    
+    // Print wire declarations for computed nodes
+    // for (class_id, node_id) in &result.choices {
+    //     if !free_variables.contains(node_id) {
+    //         println!("wire [output_size-1:0] {};", node_id);
+    //     }
+    // }
+    
+    println!("\n// Verilog assignments");
+    for (_class_id, node_id) in &result.choices {
+        let node = &egraph[node_id];
+        
+        // Skip free variables as they don't need assignments
+        if node.children.is_empty() && node.op != "0" && node.op != "1" {
+            continue;
+        }
+        
+        // Skip Var and Num operations as well
+        if node.op == "Var" || node.op == "Num" || node.op == "RootNode" {
+            continue;
+        }
+
+        // Skip primitive-i64 nodes
+        if node_id.to_string().contains("primitive") {
+            continue;
+        }
+        
+        print!("assign {} = ", node_id.to_string().replace("-", "_"));
+        
+        match node.op.as_str() {
+            // Binary operations
+            "Add" => {
+                let left = get_node_value(&egraph, &node.children[0]);
+                let right = get_node_value(&egraph, &node.children[1]);
+                println!("{} + {};", left, right);
+            },
+            "Sub" => {
+                let left = get_node_value(&egraph, &node.children[0]);
+                let right = get_node_value(&egraph, &node.children[1]);
+                println!("{} - {};", left, right);
+            },
+            "Mul" => {
+                let left = get_node_value(&egraph, &node.children[0]);
+                let right = get_node_value(&egraph, &node.children[1]);
+                println!("{} * {};", left, right);
+            },
+            "Shl" => {
+                let left = get_node_value(&egraph, &node.children[0]);
+                let right = get_node_value(&egraph, &node.children[1]);
+                println!("{} << {};", left, right);
+            },
+            
+            // Variable - retrieve string from two-level child node
+            "Var" => {
+                // let var_node = &egraph[&node.children[0]];
+                // if !var_node.children.is_empty() {
+                //     let var_name_node = &egraph[&var_node.children[0]];
+                //     println!("{};", var_name_node.op.trim_matches('"'));
+                // } else {
+                //     println!("{};", var_node.op.trim_matches('"'));
+                // }
+            },
+            
+            // Number - retrieve integer value from two-level child node
+            "Num" => {
+                // let num_node = &egraph[&node.children[0]];
+                // if !num_node.children.is_empty() {
+                //     let num_value_node = &egraph[&num_node.children[0]];
+                //     println!("{};", num_value_node.op);
+                // } else {
+                //     println!("{};", num_node.op);
+                // }
+            },
+
+            "RootNode" => {
+            },
+            
+            // Default case for any other operations
+            _ => {
+                print!("{}(", node.op);
+                for (i, child) in node.children.iter().enumerate() {
+                    if i > 0 {
+                        print!(", ");
+                    }
+                    let child_value = get_node_value(&egraph, child);
+                    print!("{}", child_value);
+                }
+                println!(");");
+            }
+        }
+    }
+    
+    // Helper function to get the actual value of a node
+    fn get_node_value(egraph: &EGraph, node_id: &NodeId) -> String {
+        let node = &egraph[node_id];
+        if node.op == "Var" && !node.children.is_empty() {
+            let var_node = &egraph[&node.children[0]];
+            if !var_node.children.is_empty() {
+                let var_name_node = &egraph[&var_node.children[0]];
+                var_name_node.op.trim_matches('"').to_string()
+            } else {
+                var_node.op.trim_matches('"').to_string()
+            }
+        } else if node.op == "Num" && !node.children.is_empty() {
+            let num_node = &egraph[&node.children[0]];
+            if !num_node.children.is_empty() {
+                let num_value_node = &egraph[&num_node.children[0]];
+                num_value_node.op.to_string()
+            } else {
+                num_node.op.to_string()
+            }
+        } else if node_id.to_string().contains("primitive") {
+            if !node.children.is_empty() {
+                let value_node = &egraph[&node.children[0]];
+                value_node.op.to_string()
+            } else {
+                node.op.trim_start_matches("primitive-i64-").to_string()
+            }
+        } else {
+            node_id.to_string().replace("-", "_")
+        }
+    }
+
+    // Print costs
+    // let tree = result.tree_cost(&egraph, &egraph.root_eclasses);
+    // let dag = result.dag_cost(&egraph, &egraph.root_eclasses);
+    // println!("\nTree cost: {}", tree);
+    // println!("DAG cost: {}", dag);
+} 

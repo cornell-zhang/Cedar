@@ -1,0 +1,45 @@
+; SPDX-License-Identifier: Apache-2.0
+
+;;;; Hierarchical Module layer (additive; --hierarchical only) ;;;;
+;;
+;; A SIBLING of the existing `Op` datatype (declared in base.egg). It lets
+;; module-level constructs (module definitions, instantiations, body-less /
+;; blackbox submodules) live in the SAME e-graph as the op-level `comb_*` /
+;; `seq_*` nodes, so a rewrite can bind both layers (cross-layer rewrites).
+;;
+;; Reconstructed from implementation's feasibility verdict (Q2 datatype sketch +
+;; PoC `as-op` bridge):
+;;   (datatype Module
+;;     (HwModule String <body>)     ; a module def (name + op-level body vec)
+;;     (Instance String Module ...) ; an instantiation, binds a submodule
+;;     (Submodule ...))             ; a body-less / opaque submodule reference
+;;
+;; This file is injected after `(include "base.egg")` by eqsat.py ONLY when the
+;; --hierarchical flag is set; the flat path never sees it, so the default
+;; (op-level) flow is byte-for-byte unchanged.
+
+;; A vector of port / signal names (for opaque submodule interfaces).
+(sort StringVec (Vec String))
+
+(datatype Module
+  ;; A module definition: symbol name + the op-level body (its root ops).
+  ;; The body is an OpVec, so a rule can reach INTO the module's op layer:
+  ;;   (HwModule ?name (vec-of ... (comb_add ...) ...))  <- binds both layers.
+  (HwModule String OpVec)
+  ;; An instantiation: instance name, the target Module node, and the
+  ;; operand connections (op-level values driving the instance ports).
+  (Instance String Module OpVec)
+  ;; A body-less / blackbox submodule held opaque: symbol name + port names.
+  ;; Used for DesignWare / RAM / std-cell / NV_BLKBOX leaves that have no
+  ;; synthesizable body we represent at op level. Saturation never rewrites
+  ;; its interior (it has none); it round-trips verbatim.
+  (Submodule String StringVec))
+
+;; A vector of Module nodes (a design / subunit is a vec of its modules).
+(sort ModuleVec (Vec Module))
+
+;; Bridge from the Module layer into the Op layer: lifts a Module instance to
+;; where an Op is expected, so a cross-layer rewrite can union an Instance with
+;; the op-level expression it is equivalent to (instance inlining). Matches the
+;; implementation PoC's `(function as-op (Module) Op)` minimal Submodule lift.
+(function as-op (Module) Op)

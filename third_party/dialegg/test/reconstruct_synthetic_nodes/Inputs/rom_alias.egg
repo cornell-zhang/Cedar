@@ -1,0 +1,90 @@
+; SPDX-License-Identifier: Apache-2.0
+
+
+(include "base.egg")
+
+;;;; comb dialect ;;;;
+(function comb_mux (Op Op Op Type) Op)
+(function comb_and (Op OpVec Type) Op)
+(function comb_or (Op OpVec Type) Op)
+(function comb_xor (Op OpVec Type) Op)
+(function comb_replicate (Op Type) Op)
+(function comb_concat (Op OpVec Type) Op)
+(function comb_icmp (Op Op AttrPair Type) Op)
+(function comb_extract (Op AttrPair Type) Op)
+(function comb_add (Op OpVec Type) Op)
+(function comb_sub (Op OpVec Type) Op)
+(function comb_mul (Op OpVec Type) Op)
+(function comb_shl (Op Op Type) Op)
+(function comb_shru (Op Op Type) Op)
+(function comb_shrs (Op Op Type) Op)
+
+;;;; hw dialect ;;;;
+(function hw_output (Op OpVec) Op)
+(function hw_constant (AttrPair Type) Op)
+(function hw_aggregate_constant (AttrPair Type) Op)
+(function hw_array_create (OpVec Type) Op)
+(function hw_array_get (Op Op Type) Op)
+(function hw_array_inject (Op Op Op Type) Op)
+
+;;;; seq dialect ;;;;
+(function seq_to_clock (Op Type) Op)
+(function seq_firreg (Op OpVec AttrPairVec Type) Op)
+;; seq.clock_inv has a fixed (clock) -> clock shape. Declaring it
+;; first-class silences the reconstruction-side warning
+;;   "Operation 'seq_clock_inv' is unsupported or does not match
+;;    the expected number of operands/results."
+;; that fires on every design with an inverted clock edge (e.g. rtllm
+;; freq_divbyodd). Pre-declaration the op rode through reconstruction
+;; via the OpaqueOp value-passthrough, so output Verilog was still
+;; correct -- but the warning is real and blocks future rules from
+;; pattern-matching across clock inversions.
+(function seq_clock_inv (Op Type) Op)
+
+;;;; llhd dialect ;;;;
+;; First-class declarations for the LLHD subset that CIRCT emits when
+;; lowering procedural Verilog (`always` blocks with signal reads/drives).
+;; llhd.process and llhd.wait still fall back to OpaqueOp because they
+;; carry regions and variadic results that need richer encoding.
+(function llhd_constant_time (AttrPair Type) Op)
+(function llhd_sig (Op AttrPair Type) Op)
+(function llhd_prb (Op Type) Op)
+;; llhd.drv has shape  llhd.drv $signal, $value after $time (if $enable)? : type
+;; with $enable optional, so the operand arity is 3 OR 4. The previous
+;; fixed-arity-4 declaration (function llhd_drv (Op Op Op Op) Op)
+;; only matched the 4-operand variant, leaving the 3-operand variant
+;; (used by rtllm/right_shifter and other always-enabled drives) to
+;; fall back to OpaqueOp and trigger the reconstruction "unsupported"
+;; warning. Using `Op Op Op OpVec` makes the enable a variadic tail of
+;; length 0 or 1; the existing eggify variadic-OpVec path
+;; (Egglog.cpp:1156-1175) packs the tail into a (vec-empty)/(vec-push
+;; ... %en) chain and reconstruction's OpVec flattener
+;; (Egglog.cpp:889-942) unpacks it the same way -- no eggify-/reconstruct-
+;; side code change needed. The Op return type is dialegg's convention
+;; for zero-result ops (see hw_output) and the matcher checks
+;; nResults==0 against op->getNumResults(), so an MLIR op with zero
+;; results still matches.
+(function llhd_drv (Op Op Op OpVec) Op)
+;; llhd.process / llhd.wait stay as OpaqueOp: they carry regions with
+;; block arguments + successor edges (cf.br, cf.cond_br) that the egglog
+;; region encoding doesn't model. Treating them as opaque keeps the
+;; original MLIR op in place during reconstruction so the body survives
+;; round-trip losslessly. Note: ExportVerilog still cannot lower these
+;; processes on designs where llhd-lower-processes / llhd-deseq bail
+;; (e.g. design accumulator_CALC_int{8,16}) — that gap is in CIRCT, not eggify.
+
+;;;; RootNode for extraction ;;;;
+(datatype Root
+  (RootNode Op)
+)
+
+;; OPS HERE ;;
+
+;; RULES HERE ;;
+(ruleset rules)
+
+
+
+(run-schedule (saturate rules))
+
+;; EXTRACTS HERE ;;

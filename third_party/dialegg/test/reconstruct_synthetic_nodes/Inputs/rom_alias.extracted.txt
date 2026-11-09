@@ -1,0 +1,2 @@
+(let __s0 (comb_icmp (Value 0 (I8)) (hw_constant (NamedAttr "value" (IntegerAttr 0 (I8))) (I8)) (NamedAttr "predicate" (IntegerAttr 0 (I64))) (I1)))
+(hw_output (comb_and (comb_xor __s0 (OpVec (hw_constant (NamedAttr "value" (IntegerAttr -1 (I1))) (I1))) (I1)) (OpVec __s0) (I1)) (vec-empty))

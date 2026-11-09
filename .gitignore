@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+/build/
+/dist/
+.pytest_cache/
+.venv/
+venv/
+
+# Toolchain build trees and wheel payloads (generated)
+/build-toolchain/
+/toolchain/wheel/cedar_toolchain/_bin/*
+!/toolchain/wheel/cedar_toolchain/_bin/.gitkeep
+/toolchain/wheel/cedar_toolchain/_share/*
+!/toolchain/wheel/cedar_toolchain/_share/.gitkeep
+/toolchain/wheel/cedar_toolchain/_licenses/*
+!/toolchain/wheel/cedar_toolchain/_licenses/.gitkeep
+/toolchain/wheel/cedar_toolchain/cedar-toolchain-manifest.json
+/toolchain/wheel/dist/
+/toolchain/wheel/build/
+/source-bundle/
+*.tar.gz
+*.tar.zst
+target/
+
+# Conventional Cedar output / private locations (secondary guard; keep them outside the repo)
+/runs/
+/cedar-runs/
+/results/
+*.cedar-run/
+/.cedar/
+profiles/*.local.yaml
+*.private.yaml
+
+# EDA tool droppings
+*.log
+*.vcd
+*.saif
+*.spef
+*.sdf
+csrc/
+simv*
+ucli.key
+WORK/
+alib-*/
+command.log
+default.svf
+*.pvl
+*.syn
+*.mr
+
+# The third_party snapshots are imported verbatim (see UPSTREAM.md); never
+# apply the generic ignore patterns above to them.
+!/third_party/**

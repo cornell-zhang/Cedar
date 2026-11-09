@@ -1,0 +1,107 @@
+{
+  "schema": "cedar-toolchain-lock/1",
+  "toolchain_version": "0.1.0",
+  "description": "Pinned sources for the Cedar compiler toolchain (circt-verilog, circt-opt, egg-opt, egglog, extract_result). Consumed by toolchain/build/build-native.sh, toolchain/build/Dockerfile, toolchain/wheel/build_wheel.sh and toolchain/scripts/make_source_bundle.py.",
+  "platform": {
+    "tested": ["linux-x86_64"],
+    "wheel_tag": "manylinux_2_28_x86_64",
+    "cpu_baseline": "x86-64-v2",
+    "max_glibc": "2.28",
+    "max_glibcxx": "3.4.25"
+  },
+  "components": {
+    "llvm": {
+      "kind": "git",
+      "url": "https://github.com/llvm/llvm-project.git",
+      "revision": "52dfcab327fe959074563603b6ebaaed314e9677",
+      "resolved_from": "circt@fa297ef296a906f5024c4be002951175f7ccdb3b submodule 'llvm'",
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "patches": []
+    },
+    "circt": {
+      "kind": "git",
+      "url": "https://github.com/llvm/circt.git",
+      "revision": "fa297ef296a906f5024c4be002951175f7ccdb3b",
+      "submodules": {"llvm": "llvm"},
+      "license": "Apache-2.0 WITH LLVM-exception",
+      "patches": []
+    },
+    "slang": {
+      "kind": "git",
+      "url": "https://github.com/MikePopoloski/slang.git",
+      "revision": "ace09c5d7c9f4e28eed654d2f353c6dc792ebf67",
+      "tag": "v10.0",
+      "resolved_from": "circt CMakeLists.txt FetchContent_Declare(slang GIT_TAG v10.0)",
+      "fetchcontent_name": "SLANG",
+      "license": "MIT",
+      "patches": []
+    },
+    "fmt": {
+      "kind": "git",
+      "url": "https://github.com/fmtlib/fmt.git",
+      "revision": "407c905e45ad75fc29bf0f9bb7c5c2fd3475976f",
+      "tag": "12.1.0",
+      "resolved_from": "slang v10.0 external/CMakeLists.txt FetchContent_Declare(fmt GIT_TAG 12.1.0)",
+      "fetchcontent_name": "FMT",
+      "license": "MIT",
+      "patches": []
+    },
+    "egglog": {
+      "kind": "git",
+      "url": "https://github.com/saulshanabrook/egg-smol.git",
+      "revision": "b6e1c96ed7335366e90056ea0a24ef425dfbb8fb",
+      "branch_hint": "cost-action",
+      "upstream": "https://github.com/egraphs-good/egglog (PR #355)",
+      "note": "DialEgg's eggify/reconstruct passes and Cedar's .egg templates require this egglog fork; mainline egglog >= 0.4 needs :no-merge on every function declaration and is not compatible.",
+      "rust_toolchain": "1.74.0 (from the repository's rust-toolchain.toml)",
+      "cargo_lock": true,
+      "license": "MIT",
+      "patches": []
+    },
+    "dialegg": {
+      "kind": "path",
+      "path": "third_party/dialegg",
+      "import_revision": "cc8fdafd07e0faae3545b48ca04b90a9a9c37256",
+      "upstream": {
+        "url": "https://github.com/AzizZayed/DialEgg",
+        "merge_base": "6cddd7b9dfb4af61fe5fbd3aca9d9dc92d9dfcd9"
+      },
+      "license": "Apache-2.0",
+      "provenance": "third_party/dialegg/UPSTREAM.md",
+      "patches": []
+    },
+    "extraction_gym": {
+      "kind": "path",
+      "path": "third_party/extraction-gym",
+      "import_revision": "47d50494391a19b10d3668cf1fe2791f2fc11894",
+      "fork": "https://github.com/zzzDavid/extraction-gym",
+      "upstream": {
+        "url": "https://github.com/egraphs-good/extraction-gym",
+        "merge_base": "ca39f566452f4e5fe3d30c57354675f73f9e56a7"
+      },
+      "cargo_lock": true,
+      "cargo_git_dependencies": {
+        "egraph-serialize": {
+          "url": "https://github.com/egraphs-good/egraph-serialize",
+          "revision": "951b829a434f4008c7b45ba4ac0da1037d2da90"
+        }
+      },
+      "license": "MIT",
+      "provenance": "third_party/extraction-gym/UPSTREAM.md",
+      "patches": []
+    }
+  },
+  "build_tools": {
+    "cmake": ">=3.28 (container: 3.31.2 from PyPI)",
+    "ninja": ">=1.11 (container: 1.11.1.1 from PyPI)",
+    "c_cxx_compiler": "GCC >= 12 for LLVM/CIRCT (container: gcc-toolset-12); clang for DialEgg",
+    "linker": "lld",
+    "rust": "rustup; default 1.83.0, egglog pins 1.74.0 via rust-toolchain.toml",
+    "container_base": "quay.io/pypa/manylinux_2_28_x86_64"
+  },
+  "outputs": {
+    "bin": ["circt-verilog", "circt-opt", "circt-lec", "egg-opt", "egglog", "extract_result"],
+    "share": ["base.egg", "circt.egg", "module.egg"],
+    "share_source": "toolchain/templates"
+  }
+}

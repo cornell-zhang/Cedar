@@ -57,9 +57,11 @@ Task kinds and what matters:
   (Conformal / self-checking simulation / circt-lec) and failing ones are discarded.
 - **propose_rules** — write general egglog rules (one `rule` with one `union` per
   file) generalizing the verified direct rewrites. Use a single type variable for
-  the width; guard every variadic operand vector you read with
-  `(= N (vec-length ?ops))`; write every premise as `(= ?var term)` (variable on
-  the left; other forms are not used as proof assumptions); only `let` and one
+  the width; give every matched operand vector exactly one guard
+  `(= N (vec-length ?ops))` with N its exact operand count (0 allowed) and read
+  only literal indices below N; write every premise as `(= ?var term)` or a
+  length guard (to equate two terms, bind both to one shared variable; other
+  premise shapes are rejected); only `let` and one
   `union` actions; no stateful ops. Cedar proves each rule with Z3 at
   every exact width it is applied to and rejects anything unproved.
 - **select_rules** (paper preset) — choose a complementary rule combination and

@@ -20,9 +20,13 @@ width it is applied to** before use; unprovable or unguarded rules are rejected.
 - Exactly one `(rule (<premises>) (<actions>) :ruleset rules)` per file with exactly one `union`.
 - Use one type variable for the operation width (e.g. `?t` in `(comb_add ?x ?ops ?t)`); Cedar
   instantiates it per concrete width and proves each instance.
-- Variadic operands live in an `OpVec`: `(comb_add ?first ?ops ?t)`. If you read
-  `(vec-get ?ops i)`, you MUST also add the guard `(= N (vec-length ?ops))` with
-  N = (largest index read) + 1, otherwise the rule is rejected (it would drop operands).
+- Variadic operands live in an `OpVec`: `(comb_add ?first ?ops ?t)`. Every matched vector
+  `?ops` MUST have exactly one guard `(= N (vec-length ?ops))`, where N is the exact number
+  of operands the rule is about (0 is allowed). The proof models exactly N elements, so
+  unread elements still count; reads `(vec-get ?ops i)` must use literal indices i < N.
+- Premises are `(= ?var term)` or a length guard only. To require two terms to be equal,
+  bind both to one variable: `(= ?z (vec-get ?a 0)) (= ?z (vec-get ?b 0))`. Any other
+  premise shape is rejected.
 - Build new vectors with `(vec-push (vec-empty) ?x)`; never match vector constructors in premises.
 - No stateful ops (`seq_firreg`, `llhd_*`). No timing/latency changes.
 - Start each file with `;` comments stating the identity and why it is valid for all inputs.

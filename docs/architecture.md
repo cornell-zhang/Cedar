@@ -45,11 +45,13 @@
 ## Rule admission (`cedar.rules.certify`)
 
 Rules are quarantined text. First the *entire executable content* is
-validated: exactly one top-level `rule` (premises only `(= a b)`; actions only
+validated: exactly one top-level `rule` (premises only `(= ?var term)`, in
+either orientation, or an exact guard `(= N (vec-length ?v))`; actions only
 `let` bindings and exactly one `union`; keywords `:ruleset rules` and `:name`)
 or one `rewrite`; any other top-level command, action (`set`, `delete`,
 `panic`, `extract`, a second `union`, ...), keyword (`:when`, `:subsume`) or
-nested command is rejected. The validated rule is then alpha-renamed: every
+nested command is rejected. Reversed equalities and guards are normalized
+to that orientation. The validated rule is then alpha-renamed: every
 pattern variable becomes a fresh `?cvN` and every `let` name a fresh
 `cedar_let_N`, so distinct egglog symbols can never be merged by the proof
 model (which desugars rewrites with an internal `?lhs`, treats bare `let` names
@@ -60,9 +62,12 @@ the rule's single type variable is replaced by that concrete type, which both
 *guards* the rule (it can only match e-nodes of that width) and fixes the proof
 width. `cedar.rules.z3verify` (the paper's Z3 bit-vector verifier, used as a
 library) proves `premises => lhs == rhs` at exactly that width. Additional
-fail-closed checks: one rule/one union, no stateful operators, every variadic
-operand vector read with `vec-get` must have an exact `vec-length` guard (the
-verifier models a vector as exactly the elements read), every operand width
+fail-closed checks: one rule/one union, no stateful operators, every matched
+operand vector must have exactly one `(= N (vec-length ?v))` guard and the
+verifier models it as exactly N elements (N = 0 included; never sized from the
+indices read), every `vec-get` index must be a literal in `[0, N)`, vector
+shapes the model does not represent (`vec-push` onto a matched vector,
+`comb_concat` over a matched non-empty vector) are unsupported, every operand width
 must be determined by the instance types, and widths above `max_width` (256)
 are unsupported. Certificates are keyed by the SHA-256 of the rule text, the
 width and a hash of the verifier code, the admission-semantics version and

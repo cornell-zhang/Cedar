@@ -6,7 +6,10 @@ Admission contract (paper: verified-only rule pool, concrete-width guards):
 1. *Quarantine*: every generated or reused rule is untrusted text.
 2. *Parse / type-check*: the rule must contain exactly one ``rule``/``rewrite``
    form with one ``union`` action, no banned (stateful) ops, and at most one
-   type variable (or none, if all types are concrete).
+   type variable (or none, if all types are concrete). Premises are
+   ``(= ?var term)`` (reversed forms are normalized) or exact length guards
+   ``(= N (vec-length ?v))``; every matched vector has exactly one guard and is
+   proved as exactly ``N`` elements, with literal reads in ``[0, N)``.
 3. *Specialize*: for each bit width ``w`` present in the target design, the
    rule's type variable is replaced by the concrete egglog type (``(I8)``,
    ``(Int 12)``, ...). The specialized instance can only match e-nodes of that
@@ -30,7 +33,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import z3
 
@@ -184,6 +187,9 @@ def validate_rule_text(rule_text: str) -> Tuple[Optional[list], str]:
         for p in form[1]:
             if not (isinstance(p, list) and len(p) == 3 and p[0] == "="):
                 return None, f"unsupported premise {zv.sexp_to_str(p)[:80]} (only (= a b) is allowed)"
+            if _premise_kind(p) is None:
+                return None, (f"unsupported premise shape {zv.sexp_to_str(p)[:80]}: write (= ?var term) "
+                              "or an exact length guard (= N (vec-length ?v))")
             bad = _forbidden_heads(p[1]) + _forbidden_heads(p[2])
             if bad:
                 return None, f"command {bad[0]!r} inside a premise"
@@ -228,7 +234,7 @@ def validate_rule_text(rule_text: str) -> Tuple[Optional[list], str]:
 
 # Bumped whenever admission semantics change; part of every certificate's
 # verifier identity (together with the source hashes of this module and z3verify).
-CERT_SEMANTICS = "alpha-renamed-v2"
+CERT_SEMANTICS = "vector-lengths-v3"
 _PAT_PREFIX = "?cv"          # pattern variables  -> ?cv1, ?cv2, ...
 _LET_PREFIX = "cedar_let_"   # let-bound names    -> cedar_let_1, ...
 
@@ -263,7 +269,7 @@ def alpha_rename(form: list) -> Tuple[Optional[list], str]:
 
     if form[0] == "rewrite":
         return ["rewrite", rn(form[1], {}), rn(form[2], {})] + list(form[3:]), ""
-    premises = [["=", rn(p[1], {}), rn(p[2], {})] for p in form[1]]
+    premises = [["=", rn(q[1], {}), rn(q[2], {})] for q in (_normalize_premise(p) for p in form[1])]
     lets: Dict[str, str] = {}
     actions = []
     for a in form[2]:
@@ -295,6 +301,36 @@ def _heads(e) -> set:
                 rec(c)
     rec(e)
     return out
+
+
+def _is_var(x) -> bool:
+    return isinstance(x, str) and x.startswith("?")
+
+
+def _is_len(x) -> bool:
+    return isinstance(x, list) and len(x) == 2 and x[0] == "vec-length" and _is_var(x[1])
+
+
+def _premise_kind(p: list) -> Optional[str]:
+    """'guard' | 'var-left' | 'var-right', or None for an unsupported shape."""
+    a, b = p[1], p[2]
+    if (isinstance(a, int) and a >= 0 and _is_len(b)) or (isinstance(b, int) and b >= 0 and _is_len(a)):
+        return "guard"
+    if _is_var(a):
+        return "var-left"
+    if _is_var(b):
+        return "var-right"
+    return None
+
+
+def _normalize_premise(p: list) -> list:
+    """Canonical orientation: (= ?var term) and (= N (vec-length ?v))."""
+    k = _premise_kind(p)
+    if k == "guard":
+        return ["=", p[1], p[2]] if isinstance(p[1], int) else ["=", p[2], p[1]]
+    if k == "var-right":
+        return ["=", p[2], p[1]]
+    return list(p)
 
 
 def _type_sexp(width: int) -> list:
@@ -447,8 +483,8 @@ def prove_instance(rule_name: str, rule_text: str, width: int, sigs: Dict[str, L
         return cert("UNSUPPORTED", f"instance mentions data widths {sorted(others)} besides {width}", inst)
     arity = _unguarded_vectors(inst, sigs)
     if arity:
-        return cert("UNSUPPORTED", "variadic operand vector(s) without an exact (= N (vec-length ?v)) "
-                    f"guard matching the indices used: {arity}", inst)
+        return cert("UNSUPPORTED", "operand vector(s) without one exact (= N (vec-length ?v)) guard, or "
+                    f"read out of the guarded bounds: {arity}", inst)
     unguarded = _unguarded_operands(parsed, sigs, inst)
     if unguarded:
         return cert("UNSUPPORTED", f"operand width not fixed by the instance types: {unguarded}", inst)
@@ -530,12 +566,15 @@ def _unguarded_operands(parsed, sigs: Dict[str, List[str]], rule_text: str) -> L
 
 
 def _unguarded_vectors(rule_text: str, sigs: Dict[str, List[str]]) -> List[str]:
-    """OpVec pattern variables lacking an exact length guard.
+    """Vector pattern variables the proof model cannot represent exactly.
 
-    The verifier models a pattern vector ``?v`` as exactly the elements read
-    with ``(vec-get ?v i)``. That model is only faithful if the rule also
-    requires ``(vec-length ?v) == max_index + 1``; otherwise the rule would
-    also match longer vectors and silently drop the remaining operands.
+    The verifier models a pattern vector ``?v`` as exactly ``N`` elements,
+    where ``N`` comes from the rule's single ``(= N (vec-length ?v))`` premise
+    (``N = 0`` included). Every vector variable -- an ``OpVec`` operand, or one
+    read with ``vec-get`` / ``vec-length`` -- therefore needs exactly one such
+    guard, and every read must use an integer literal index in ``[0, N)``.
+    The number of operands modeled never depends on which indices are read.
+    Rewrites have no premises and so can never guard a vector.
     """
     forms = zv.parse_top_forms(zv._strip_line_comments(rule_text))
     rule = next((f for f in forms if isinstance(f, list) and f and f[0] in ("rule", "rewrite")), None)
@@ -547,45 +586,53 @@ def _unguarded_vectors(rule_text: str, sigs: Dict[str, List[str]]) -> List[str]:
         found: set = set()
 
         def vis(e):
-            if isinstance(e, list) and e and isinstance(e[0], str) and e[0] in sigs:
-                for i, kind in enumerate(sigs[e[0]]):
-                    if kind == "OpVec" and i + 1 < len(e) and isinstance(e[i + 1], str) and e[i + 1].startswith("?"):
+            if isinstance(e, list) and e and isinstance(e[0], str):
+                for i, kind in enumerate(sigs.get(e[0]) or []):
+                    if kind == "OpVec" and i + 1 < len(e) and _is_var(e[i + 1]):
                         found.add(e[i + 1])
-        _walk(rule[1] if len(rule) > 1 else [], vis)
+                if e[0] in ("vec-get", "vec-length") and len(e) >= 2 and _is_var(e[1]):
+                    found.add(e[1])
+        for part in rule[1:3]:
+            _walk(part, vis)
         return [f"{v} (a rewrite cannot guard vector length; use a rule with (= N (vec-length {v})))"
                 for v in sorted(found)]
     if rule[0] != "rule" or len(rule) < 3 or not isinstance(rule[1], list):
         return []
     premises = rule[1]
     vecs: set = set()
-    max_idx: Dict[str, int] = {}
-    guards: Dict[str, int] = {}
+    reads: Dict[str, List[Any]] = {}
+    guards: Dict[str, List[int]] = {}
 
     def visit(e):
         if isinstance(e, list) and e and isinstance(e[0], str):
             kinds = sigs.get(e[0])
             if kinds:
                 for i, kind in enumerate(kinds):
-                    if kind == "OpVec" and i + 1 < len(e) and isinstance(e[i + 1], str) and e[i + 1].startswith("?"):
+                    if kind == "OpVec" and i + 1 < len(e) and _is_var(e[i + 1]):
                         vecs.add(e[i + 1])
-            if e[0] == "vec-get" and len(e) == 3 and isinstance(e[1], str) and isinstance(e[2], int):
-                max_idx[e[1]] = max(max_idx.get(e[1], -1), e[2])
-    # Element reads count wherever they occur (premises or actions); length
-    # guards only count as premises.
+            if e[0] == "vec-get" and len(e) == 3 and _is_var(e[1]):
+                vecs.add(e[1])
+                reads.setdefault(e[1], []).append(e[2])
+            if e[0] == "vec-length" and len(e) == 2 and _is_var(e[1]):
+                vecs.add(e[1])
+    # Reads count wherever they occur; guards are premises only.
     _walk(rule[2] if isinstance(rule[2], list) else [], visit)
     for p in premises:
+        if isinstance(p, list) and len(p) == 3 and p[0] == "=" and _premise_kind(p) == "guard":
+            q = _normalize_premise(p)
+            guards.setdefault(q[2][1], []).append(q[1])
+            continue
         _walk(p, visit)
-        if isinstance(p, list) and len(p) == 3 and p[0] == "=":
-            a, b = p[1], p[2]
-            for n, v in ((a, b), (b, a)):
-                if isinstance(n, int) and isinstance(v, list) and len(v) == 2 and v[0] == "vec-length" \
-                        and isinstance(v[1], str):
-                    guards[v[1]] = n
     bad = []
     for v in sorted(vecs):
-        need = max_idx.get(v, -1) + 1
-        if guards.get(v) != need:
-            bad.append(f"{v} (reads {need} element(s), guard={guards.get(v)})")
+        g = sorted(set(guards.get(v, [])))
+        if len(g) != 1:
+            bad.append(f"{v} (needs exactly one length guard (= N (vec-length {v})), found {g or 'none'})")
+            continue
+        n = g[0]
+        for idx in reads.get(v, []):
+            if not isinstance(idx, int) or not 0 <= idx < n:
+                bad.append(f"{v} (read index {idx!r} outside guarded length {n})")
     return bad
 
 

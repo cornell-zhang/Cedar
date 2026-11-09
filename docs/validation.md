@@ -63,7 +63,7 @@ environment; plugins loaded from a clean export of the release commit):
 
 | Host | Run wall clock | Agent session | Result |
 | --- | --- | --- | --- |
-| Claude Code (`--plugin-dir`) | 4 min 57 s | 5 min 13 s | completed, contract met, iteration successful; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; the agent's (true) rule was refuted because its premises were not written as `(= ?var term)` (conservative, see limitations) |
+| Claude Code (`--plugin-dir`) | 4 min 57 s | 5 min 13 s | completed, contract met, iteration successful; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; the agent's (true) rule was refuted because its premises were not written as `(= ?var term)` (that verifier dropped such premises; it is now rejected up front, see the fourth review) |
 | Codex (installed plugin) | 5 min 19 s | 5 min 59 s | completed, contract met; identical extracted result; agent rule proved at 1/8/16 bits |
 
 Earlier release-candidate runs of the same flow: 6 min 58 s / 5 min 59 s
@@ -158,16 +158,45 @@ with regression tests before the release runs above:
   RTL or incomplete/failed measurements can no longer appear on the frontier
   or influence direct-round convergence and agent feedback.
 
+## Fourth review: vector cardinality and premise shapes
+
+* Admission checked a vector's length guard against every index in the rule,
+  but the proof model sized a matched operand vector from the indices its
+  parser kept (one element when none were kept), and the parser silently
+  dropped premises that were not written `(= ?var term)`. The earlier claim
+  here that ignored premises "can refute a true rule (never admit a false
+  one)" was wrong: two false rules were PROVED and admitted --
+  `mul(1, ?v) -> add(0, ?v)` with `(vec-length ?v) = 0` (the empty vector
+  was modeled as one operand), and the same rewrite with length 2 and a
+  reversed read `(= (vec-get ?v 1) ?last)` (the read was dropped, so the
+  vector was modeled as one operand).
+* The proof now models every matched vector with exactly the length of its
+  `(= N (vec-length ?v))` guard (including 0), never from the reads.
+  Reversed equalities and guards are normalized in the canonical text that
+  is both proved and executed; any other premise shape is rejected before
+  proof. Each vector variable needs exactly one guard, every read must be an
+  integer literal in `[0, N)`, and unmodeled shapes (`vec-push` onto a
+  matched vector, `comb_concat` over a matched non-empty vector) fail closed.
+* The certificate semantics version is now `vector-lengths-v3`, so stored
+  certificates and recorded run instances from earlier verifiers are
+  re-proved (or the run stops) instead of reused.
+* Regressions (`tests/test_certify.py`) run both counterexamples and a
+  length-3/two-read variant through real egglog (raw rule makes the false
+  check pass; nothing admitted does), and prove and execute valid zero-length,
+  two-element and reversed-premise distributivity rules.
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.
 * Per-e-node features are estimates; attribution splits shared cells equally
   among the operator tokens of an RTL line (see `docs/cost-model.md`).
 * Rules that relate several bit widths are rejected by the certifier in v0.1.
-* The verifier uses only premises of the form `(= ?var term)` as assumptions;
-  other premises (e.g. `(= (vec-get ?v 0) ?x)`) are ignored, which can refute a
-  true rule (never admit a false one). Write premises with the variable on the
-  left.
+* Premises must be `(= ?var term)` (either orientation) or an exact length
+  guard `(= N (vec-length ?v))`. Premises equating two non-variable terms, e.g.
+  `(= (vec-get ?a 0) (vec-get ?b 0))`, are rejected rather than used; bind a
+  shared variable instead (`(= ?z (vec-get ?a 0)) (= ?z (vec-get ?b 0))`).
+  Variable operand vectors must have one exact length guard; `comb_concat`
+  over a matched non-empty vector is unsupported.
 * `circt-lec` verification supports combinational designs only.
 * The hierarchical design accumulator driver from the paper's experiments is not part of
   this release.

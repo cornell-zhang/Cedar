@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+import re
 from importlib import resources
 
 import pytest
@@ -249,3 +250,126 @@ def test_renamed_correct_rule_still_proves_and_runs(tmp_path, toolchain, templat
     x = _c8(5)
     assert _egglog_holds(toolchain, tmp_path, [i.text for i in adm.admitted],
                          f"(comb_add {x} (vec-of {_c8(0)}) (I8))", x, "good")
+
+
+# --- review regressions: vector cardinality comes from the exact length guard ---
+
+def _vec(*ns):
+    return "(vec-of " + " ".join(_c8(n) for n in ns) + ")" if ns else "(vec-empty)"
+
+
+# rule text, concrete LHS, the RHS the (false) rule equates it to
+_VECTOR_CASES = {
+    # 1 * (empty product) = 1 but 0 + (empty sum) = 0: the old model invented one operand
+    "zero_length": (f"(rule ((= ?lhs (comb_mul {_c8(1)} ?v (I8))) (= 0 (vec-length ?v))) "
+                    f"((union ?lhs (comb_add {_c8(0)} ?v (I8)))) :ruleset rules)",
+                    f"(comb_mul {_c8(1)} {_vec()} (I8))", f"(comb_add {_c8(0)} {_vec()} (I8))"),
+    # 1*2*3 = 6 but 0+2+3 = 5: the reversed read premise used to be dropped, leaving no read
+    "two_elements_reversed_read": (f"(rule ((= ?lhs (comb_mul {_c8(1)} ?v (I8))) (= 2 (vec-length ?v)) "
+                                   f"(= (vec-get ?v 1) ?last)) ((union ?lhs (comb_add {_c8(0)} ?v (I8)))) "
+                                   ":ruleset rules)",
+                                   f"(comb_mul {_c8(1)} {_vec(2, 3)} (I8))", f"(comb_add {_c8(0)} {_vec(2, 3)} (I8))"),
+    # a + b + c + d rewritten to a + b + c: two reads must not make a length-3 vector two elements
+    "three_elements_two_read": ("(rule ((= ?lhs (comb_add ?a ?v (I8))) (= 3 (vec-length ?v)) "
+                                "(= ?b (vec-get ?v 0)) (= ?c (vec-get ?v 1))) "
+                                "((union ?lhs (comb_add ?a (vec-of ?b ?c) (I8)))) :ruleset rules)",
+                                f"(comb_add {_c8(1)} {_vec(2, 3, 4)} (I8))", f"(comb_add {_c8(1)} {_vec(2, 3)} (I8))"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_VECTOR_CASES))
+def test_vector_cardinality_cannot_admit_false_rules(case, tmp_path, toolchain, template_sigs):
+    rule, lhs, rhs = _VECTOR_CASES[case]
+    for w in (8,):
+        c, _ = C.prove_instance(case, rule, w, template_sigs)
+        assert c.status == "REFUTED", (case, c.status, c.detail)
+    adm = C.admit({case: rule}, [8], None, template_sigs)
+    assert not adm.admitted
+    # control: the raw rule really fires in egglog and equates the unequal terms ...
+    assert _egglog_holds(toolchain, tmp_path, [rule], lhs, rhs, "control")
+    # ... while nothing that was admitted does
+    assert not _egglog_holds(toolchain, tmp_path, [i.text for i in adm.admitted], lhs, rhs, "admitted")
+
+
+_VALID_VECTOR_RULES = {
+    # x + (empty sum) = x, for a zero-length guard
+    "add_empty": ("(rule ((= ?l (comb_add ?a ?v ?t)) (= 0 (vec-length ?v))) ((union ?l ?a)) :ruleset rules)",
+                  f"(comb_add {_c8(5)} {_vec()} (I8))", _c8(5)),
+    # a + b + c = c + a + b, two elements, guard and read written reversed
+    "add_rotate2": ("(rule ((= ?l (comb_add ?a ?v ?t)) (= (vec-length ?v) 2) (= (vec-get ?v 0) ?b) "
+                    "(= ?c (vec-get ?v 1))) ((union ?l (comb_add ?c (vec-of ?a ?b) ?t))) :ruleset rules)",
+                    f"(comb_add {_c8(1)} {_vec(2, 3)} (I8))", f"(comb_add {_c8(3)} {_vec(1, 2)} (I8))"),
+    # (x*z) + (y*z) = (x+y)*z, from an agent run (reversed guard/read premises, shared factor via ?z)
+    "distribute": ("(rule ((= ?p (comb_mul ?x ?mx ?t)) (= 1 (vec-length ?mx)) (= ?z (vec-get ?mx 0)) "
+                   "(= ?q (comb_mul ?y ?my ?t)) (= 1 (vec-length ?my)) (= ?z (vec-get ?my 0)) "
+                   "(= ?s (comb_add ?p ?ops ?t)) (= (vec-length ?ops) 1) (= (vec-get ?ops 0) ?q)) "
+                   "((union ?s (comb_mul (comb_add ?x (vec-push (vec-empty) ?y) ?t) (vec-push (vec-empty) ?z) ?t))) "
+                   ":ruleset rules)",
+                   f"(comb_add (comb_mul {_c8(2)} {_vec(7)} (I8)) (vec-of (comb_mul {_c8(3)} {_vec(7)} (I8))) (I8))",
+                   f"(comb_mul (comb_add {_c8(2)} (vec-push (vec-empty) {_c8(3)}) (I8)) "
+                   f"(vec-push (vec-empty) {_c8(7)}) (I8))"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_VALID_VECTOR_RULES))
+def test_valid_vector_rules_prove_and_run(case, tmp_path, toolchain, template_sigs):
+    rule, lhs, rhs = _VALID_VECTOR_RULES[case]
+    for w in (1, 8, 16):
+        c, inst = C.prove_instance(case, rule, w, template_sigs)
+        assert c.status == "PROVED", (case, w, c.detail)
+        # the proved/executed text carries normalized premises: (= ?var term) and (= N (vec-length ?v))
+        premises = inst.split("((union")[0]
+        assert all(re.fullmatch(r"\?cv\d+|\d+", lhs_) for lhs_ in re.findall(r"\(= (\S+)", premises)), inst
+    adm = C.admit({case: rule}, [8], None, template_sigs)
+    assert [i.width for i in adm.admitted] == [8]
+    assert not _egglog_holds(toolchain, tmp_path, [], lhs, rhs, "no_rules")      # not trivially equal
+    assert _egglog_holds(toolchain, tmp_path, [i.text for i in adm.admitted], lhs, rhs, "admitted")
+
+
+def test_unsupported_vector_and_premise_shapes_fail_closed(template_sigs):
+    add1 = "(= ?l (comb_add ?a ?v ?t))"
+    union = "((union ?l (comb_add ?a ?v ?t))) :ruleset rules)"
+    cases = {
+        # premise shapes the proof model cannot assume: rejected before any proof
+        "term_eq_term": (f"(rule ({add1} (= 1 (vec-length ?v)) (= ?w ?v) (= (vec-get ?v 0) (vec-get ?w 0))) {union}",
+                         "REJECTED"),
+        "op_eq_op": (f"(rule ({add1} (= 1 (vec-length ?v)) (= (comb_add ?a ?v ?t) (comb_mul ?a ?v ?t))) {union}",
+                     "REJECTED"),
+        "negative_guard": (f"(rule ({add1} (= -1 (vec-length ?v))) {union}", "REJECTED"),
+        # vector shapes without one exact, in-bounds guard: unsupported
+        "no_guard": (f"(rule ({add1}) {union}", "UNSUPPORTED"),
+        "conflicting_guards": (f"(rule ({add1} (= 1 (vec-length ?v)) (= 2 (vec-length ?v))) {union}", "UNSUPPORTED"),
+        "read_past_end": (f"(rule ({add1} (= 1 (vec-length ?v)) (= ?b (vec-get ?v 1))) "
+                          "((union ?l (comb_add ?a (vec-of ?b) ?t))) :ruleset rules)", "UNSUPPORTED"),
+        "read_past_end_in_action": (f"(rule ({add1} (= 2 (vec-length ?v))) "
+                                    "((union ?l (comb_add ?a (vec-of (vec-get ?v 2)) ?t))) :ruleset rules)",
+                                    "UNSUPPORTED"),
+        "read_in_empty": (f"(rule ({add1} (= 0 (vec-length ?v)) (= ?b (vec-get ?v 0))) {union}", "UNSUPPORTED"),
+        "variable_index": (f"(rule ({add1} (= 2 (vec-length ?v)) (= ?b (vec-get ?v ?i))) {union}", "UNSUPPORTED"),
+        "rewrite_vec_get": ("(rewrite (comb_xor ?a ?v ?t) (comb_xor (vec-get ?v 0) (vec-of ?a) ?t) :ruleset rules)",
+                            "UNSUPPORTED"),
+        "concat_variable_vector": ("(rule ((= ?l (comb_concat ?a ?v ?t)) (= 1 (vec-length ?v))) "
+                                   "((union ?l (comb_concat ?a ?v ?t))) :ruleset rules)", "!PROVED"),
+    }
+    for name, (rule, want) in cases.items():
+        c, _ = C.prove_instance(name, rule, 8, template_sigs)
+        if want == "!PROVED":
+            assert c.status != "PROVED", (name, c.detail)
+        else:
+            assert c.status == want, (name, c.status, c.detail)
+        assert not C.admit({name: rule}, [8], None, template_sigs).admitted
+
+
+def test_certificates_from_older_semantics_are_not_reused(tmp_path, template_sigs, monkeypatch):
+    rule = _VECTOR_CASES["two_elements_reversed_read"][0]
+    real = C.verifier_hash()
+    monkeypatch.setattr(C, "verifier_hash", lambda: "0ld-vector-model")
+    old = C.CertificateStore(tmp_path, template_sigs)
+    c, inst = C.prove_instance("two", rule, 8, template_sigs)
+    forged = C.Certificate(**{**c.__dict__, "status": "PROVED", "instance_sha256": C.rule_sha(inst or rule)})
+    old.put(forged)                                   # what the previous verifier version recorded
+    assert old.get(C.rule_sha(rule), 8) is not None
+    monkeypatch.setattr(C, "verifier_hash", lambda: real)
+    assert real != "0ld-vector-model" and C.CERT_SEMANTICS == "vector-lengths-v3"
+    adm = C.admit({"two": rule}, [8], C.CertificateStore(tmp_path, template_sigs), template_sigs)
+    assert not adm.admitted and adm.rejected[0].status == "REFUTED"

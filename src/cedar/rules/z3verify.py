@@ -196,6 +196,7 @@ class ParsedRule:
         rhs_expr: Any,
         annotated_widths: List[int],
         skip_reason: Optional[str] = None,
+        vec_lengths: Optional[Dict[str, int]] = None,
     ):
         self.name = name
         self.description = description
@@ -206,6 +207,10 @@ class ParsedRule:
         self.rhs_expr = rhs_expr
         self.annotated_widths = annotated_widths
         self.skip_reason = skip_reason
+        # Exact length of every variable operand vector, from the rule's
+        # (= N (vec-length ?v)) premises. The model uses exactly these lengths
+        # (zero included); a variable vector without one is unsupported.
+        self.vec_lengths: Dict[str, int] = dict(vec_lengths or {})
 
 
 def _rewrite_bare_refs(expr: Any, bare_names: Dict[str, str]) -> Any:
@@ -302,15 +307,36 @@ def _parse_rule_form(form: Any) -> Optional[Tuple[List[Tuple[str, Any]], List[An
     actions_block = form[2]
     if not (isinstance(premises_block, list) and isinstance(actions_block, list)):
         return None
-    # Convert each premise `(= ?var expr)` into (var, expr).
+    # Every premise must be modeled: `(= ?var expr)` (either orientation) or
+    # an exact length guard `(= N (vec-length ?v))` (either orientation).
+    # Anything else makes the whole rule unsupported -- silently dropping a
+    # premise could drop information (e.g. vector shape) the proof relies on.
     premises: List[Tuple[str, Any]] = []
+    lengths: Dict[str, int] = {}
     for p in premises_block:
-        if isinstance(p, list) and len(p) == 3 and p[0] == "=" and isinstance(p[1], str) and p[1].startswith("?"):
-            premises.append((p[1], p[2]))
-        # Other premise shapes (raw conditions, etc.) are dropped; we
-        # don't currently model them. If they matter for soundness the
-        # rule will likely classify INVALID anyway.
-    return premises, actions_block
+        if not (isinstance(p, list) and len(p) == 3 and p[0] == "="):
+            return None
+        a, b = p[1], p[2]
+        guard = _length_guard(a, b) or _length_guard(b, a)
+        if guard is not None:
+            v, n = guard
+            if lengths.get(v, n) != n:
+                return None
+            lengths[v] = n
+        elif isinstance(a, str) and a.startswith("?"):
+            premises.append((a, b))
+        elif isinstance(b, str) and b.startswith("?"):
+            premises.append((b, a))
+        else:
+            return None
+    return premises, actions_block, lengths
+
+
+def _length_guard(n: Any, v: Any) -> Optional[Tuple[str, int]]:
+    if isinstance(n, int) and n >= 0 and isinstance(v, list) and len(v) == 2 and v[0] == "vec-length" \
+            and isinstance(v[1], str) and v[1].startswith("?"):
+        return v[1], n
+    return None
 
 
 def _parse_rewrite_form(form: Any) -> Optional[Tuple[List[Tuple[str, Any]], List[Any]]]:
@@ -324,7 +350,7 @@ def _parse_rewrite_form(form: Any) -> Optional[Tuple[List[Tuple[str, Any]], List
     rhs = form[2]
     premises = [("?lhs", lhs)]
     actions = [["union", "?lhs", rhs]]
-    return premises, actions
+    return premises, actions, {}    # a rewrite cannot guard vector lengths
 
 
 def parse_rule_file(filepath: Path) -> Tuple[Optional[ParsedRule], Optional[str]]:
@@ -360,8 +386,8 @@ def parse_rule_file(filepath: Path) -> Tuple[Optional[ParsedRule], Optional[str]
     else:
         parsed = _parse_rewrite_form(rule_form)
     if parsed is None:
-        return None, f"malformed-{rule_kind}-form"
-    premises, actions = parsed
+        return None, f"malformed-or-unsupported-{rule_kind}-form (premises must be (= ?var term) or (= N (vec-length ?v)))"
+    premises, actions, vec_lengths = parsed
 
     # First, peel any vec-shape premises out of `premises` into the
     # inline map: `(= ?v (vec-push ...))` premises bind a vec name to
@@ -447,6 +473,7 @@ def parse_rule_file(filepath: Path) -> Tuple[Optional[ParsedRule], Optional[str]
         lhs_var=lhs_var,
         rhs_expr=rhs_expr,
         annotated_widths=annotated,
+        vec_lengths=vec_lengths,
     )
     return rule, None
 
@@ -533,6 +560,7 @@ class TypeEnv:
         # vec-of/vec-push literal).
         self.vec_max_index: Dict[str, int] = {}
         self.vec_elem_width: Dict[str, int] = {}
+        self.vec_lengths: Dict[str, int] = {}
         # When a variable appears in a Type slot (e.g.
         # `comb_add(a, ops, ?t)`), its identity is a CIRCT type, not a BV
         # value. Track the inferred bit-width of that *type* separately
@@ -734,6 +762,7 @@ def _infer_op_widths(expr: Any, env: TypeEnv, expected_width: Optional[int]) -> 
 
 def infer_types(rule: ParsedRule) -> TypeEnv:
     env = TypeEnv()
+    env.vec_lengths = dict(getattr(rule, "vec_lengths", {}) or {})
     # Premises of the form (= ?var expr): the ?var inherits expr's type
     # when we can deduce it. We do a fixpoint: keep walking until no
     # new bindings appear.
@@ -899,6 +928,11 @@ class Z3Translator:
                 return literal[idx]
             raise TranslationError(f"vec-get-out-of-range index={idx} on literal vec of length {len(literal)}")
         if isinstance(vec_expr, str) and vec_expr.startswith("?"):
+            n = getattr(self.env, "vec_lengths", {}).get(vec_expr)
+            if n is None:
+                raise TranslationError(f"vector {vec_expr} has no exact (= N (vec-length {vec_expr})) guard")
+            if not 0 <= idx < n:
+                raise TranslationError(f"vec-get-out-of-range index={idx} on {vec_expr} of length {n}")
             fn = self._vec_func(vec_expr, elem_width)
             return fn(z3.IntVal(idx))
         raise TranslationError(f"unsupported-vec-shape {sexp_to_str(vec_expr)[:80]}")
@@ -945,12 +979,16 @@ class Z3Translator:
             vec = expr[2]
             elements = self._vec_elements(vec, type_w)
             if elements is None:
-                # Vec is a variable bound by premises — gather its
-                # element-0..max via the UF.
+                # Vec is a variable bound by premises: its elements come
+                # from the per-index UF.
                 if isinstance(vec, str) and vec.startswith("?"):
-                    max_idx = self.env.vec_max_index.get(vec, 0)
+                    # Exactly the guarded length -- never reconstructed from
+                    # the indices that happen to be read (0 elements allowed).
+                    n = getattr(self.env, "vec_lengths", {}).get(vec)
+                    if n is None:
+                        raise TranslationError(f"vector {vec} has no exact (= N (vec-length {vec})) guard")
                     fn = self._vec_func(vec, type_w)
-                    elements = [fn(z3.IntVal(i)) for i in range(max_idx + 1)]
+                    elements = [fn(z3.IntVal(i)) for i in range(n)]
                 else:
                     raise TranslationError(f"{head}-unmodeled-vec")
             # n-ary fold.
@@ -1068,20 +1106,13 @@ class Z3Translator:
                 elements = self._vec_elements(vec, None)
             if elements is None:
                 if isinstance(vec, str) and vec.startswith("?"):
-                    # Use the per-vec UF. Assume max_idx + 1 equal-width
-                    # elements; element width = (res_w - high_w) /
-                    # (max_idx + 1). If that doesn't divide evenly we
-                    # bail out.
-                    max_idx = self.env.vec_max_index.get(vec, 0)
-                    n_elems = max_idx + 1
-                    low_w = res_w - high_w
-                    if low_w <= 0 or low_w % n_elems != 0:
-                        raise WidthIncompatible(
-                            f"comb_concat-var-vec-bad-shape res={res_w} high={high_w} n={n_elems}"
-                        )
-                    elem_w = low_w // n_elems
-                    fn = self._vec_func(vec, elem_w)
-                    elements = [fn(z3.IntVal(i)) for i in range(n_elems)]
+                    # Element widths of a matched concat vector are not fixed
+                    # by the pattern, so only the guarded empty vector is modeled.
+                    n = getattr(self.env, "vec_lengths", {}).get(vec)
+                    if n != 0:
+                        raise TranslationError(
+                            f"comb_concat over variable vector {vec} (length {n}) is unsupported")
+                    elements = []
                 else:
                     raise TranslationError("comb_concat-vec-not-literal")
             pieces = [high] + elements

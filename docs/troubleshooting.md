@@ -16,7 +16,8 @@
 | `circt-lec ... combinational designs only` | Use `conformal` or a self-checking `simulation` testbench for sequential designs. |
 | task REJECTED: `port list differs from the original` | Direct rewrites and reconstructions must keep the module name, port names, directions and widths. |
 | task REJECTED: `expected exactly one rule form` | One `(rule ...)` with one `union` per file. |
-| rule `UNSUPPORTED: variadic operand vector(s) without an exact (= N (vec-length ?v)) guard` | Add the guard; without it the rule could match longer operand vectors and silently drop operands. |
+| rule `UNSUPPORTED: operand vector(s) without one exact (= N (vec-length ?v)) guard, or read out of the guarded bounds` | Add exactly one guard with the vector's exact operand count (0 allowed) and read only literal indices below it; the proof models exactly N operands. |
+| rule `REJECTED: unsupported premise shape ...` | Premises must be `(= ?var term)` or `(= N (vec-length ?v))`. To equate two terms, bind both to one shared variable. |
 | rule `UNSUPPORTED: ... independent type variables` | Rules that relate different widths are not certified in v0.1; write one rule per width relation with concrete types. |
 | rule `REFUTED` at some width only | The identity does not hold at that width (e.g. it holds modulo 2 but not modulo 2^8). Only proved widths are applied. |
 | CIRCT extraction failed | The run creates an `extraction_fallback` task; the agent's reconstruction is verified like any candidate. Inspect `egraph/iterNN/*.mlir` and the egg-opt stderr in `run.json`. |

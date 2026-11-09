@@ -88,3 +88,49 @@ def test_direct_rounds_converge_on_objective(tmp_path, toolchain, monkeypatch):
     assert rounds[1]["improved"] is False and rounds[1]["decision"].startswith("converged")
     assert status == "awaiting_agent" and run.pending_task().kind == "select_rules"   # paper preset
     assert run.s["candidates"]["direct_r2_1"]["round"] == 2
+
+
+def test_failed_verification_excluded_end_to_end(tmp_path, toolchain, monkeypatch):
+    """quick preset: a wrong direct rewrite is excluded; the e-graph candidate
+    (real toolchain eqsat + extraction) is measured and reported."""
+    import json
+
+    monkeypatch.setenv("CEDAR_STATE_HOME", str(tmp_path / "state"))
+    FAKE.update({"iter01": (60.0, 1.0, 70.0)})
+    monkeypatch.setattr(E.Run, "_measure", _fake_measure)
+    monkeypatch.setattr(E.Run, "_verify", lambda self, name, rtl: {
+        "status": "failed" if name.startswith("direct") else "passed", "backend": "stub",
+        "detail": "stub verdict", "seconds": 0.0, "evidence": ""})
+    monkeypatch.setattr(E.flow, "synthesize", lambda *a, **k: _NoSynth())
+    monkeypatch.setattr(E.flow, "synth_metrics", lambda *a, **k: {})
+    monkeypatch.setattr(E.Run, "phase_attribution", lambda self: "next")
+    for n in ("a.db", "a.lib", "a.v", "rc", "tech.lef", "cells.lef"):
+        (tmp_path / n).write_text("")
+    (tmp_path / "m.v").write_text(RTL)
+    stages = {"synthesis": "synopsys-dc", "place_route": "cadence-innovus", "simulation": "synopsys-vcs",
+              "saif": "synopsys-vcd2saif", "power": "synopsys-primetime", "equivalence": "cadence-conformal"}
+    (tmp_path / "tools.yaml").write_text(yaml.safe_dump({"schema": "cedar/tool-profile@1", "name": "t", "tools": {
+        k: {"adapter": v, "executable": "true"} for k, v in stages.items()}}))
+    (tmp_path / "tech.yaml").write_text(yaml.safe_dump({
+        "schema": "cedar/technology@1", "name": "x", "units": {"time": "ps"}, "default_corner": "tt",
+        "corners": {"tt": {"db": ["a.db"], "liberty": ["a.lib"], "sim_models": ["a.v"], "rc_tech": "rc"}},
+        "lef": {"tech": "tech.lef", "cells": ["cells.lef"]}, "place_route": {"site": "core"}}))
+    (tmp_path / "design.yaml").write_text(yaml.safe_dump({
+        "schema": "cedar/design@1", "name": "m", "top": "m", "rtl": ["m.v"],
+        "profiles": {"tools": "tools.yaml", "technology": "tech.yaml"},
+        "clocks": [{"port": "clk", "period_ns": 1.0}], "activity": {"mode": "testbench", "testbench": "m.v"},
+        "verification": {"mode": "conformal"}, "objective": {"preset": "balanced"},
+        "search": {"preset": "quick", "rules_to_propose": 0}}))
+    sel = str(toolchain.bin_dir.parent) if toolchain.bin_dir.name == "bin" else None
+    run = E.Run.create(str(tmp_path / "design.yaml"), str(tmp_path / "runs"), toolchain_prefix=sel)
+    assert run.advance() == "awaiting_agent"
+    t1 = run.pending_task()
+    Path(t1.outputs[0].path).write_text(VARIANT)
+    Path(t1.outputs[-1].path).write_text('{"variants": []}')
+    assert run.submit(t1.id, {"host": "test"})[0]
+    assert run.advance() == "completed"
+    rep = json.loads((run.dir / "report.json").read_text())
+    assert rep["excluded_candidates"] == ["direct_1"]
+    assert "direct_1" not in rep["accepted_candidates"] and "iter01" in rep["accepted_candidates"]
+    assert "measurement" not in run.s["candidates"]["direct_1"]          # never measured
+    assert [p["name"] for p in rep["frontier"]["points"]] == ["iter01"]   # dominates the baseline here

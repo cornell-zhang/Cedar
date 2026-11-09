@@ -861,6 +861,19 @@ class TranslationError(Exception):
     """Recoverable: triggers UNKNOWN: <reason> for the current rule."""
 
 
+class WidthBeyondModel(TranslationError):
+    """A width above SWEEP_CAP: the model refuses instead of clamping it."""
+
+
+def _model_width(w: int) -> int:
+    """Widths are modeled exactly or not at all: a width above SWEEP_CAP is
+    never clamped (a proof at the clamped width says nothing about the
+    declared one); it stops the proof with UNKNOWN."""
+    if w > SWEEP_CAP:
+        raise WidthBeyondModel(f"width {w} exceeds the proof model's limit {SWEEP_CAP}")
+    return w
+
+
 class WidthIncompatible(TranslationError):
     """The rule's type constraints are incoherent at the chosen sweep
     width (e.g., comb_concat at width 1 with a 1-bit `high` slot leaves
@@ -993,7 +1006,7 @@ class Z3Translator:
             if type_w is None:
                 # Fall back to expected_width or default.
                 type_w = expected_width or self.default_width
-            type_w = min(type_w, SWEEP_CAP)
+            type_w = _model_width(type_w)
             a = self.translate(expr[1], type_w)
             vec = expr[2]
             elements = self._vec_elements(vec, type_w)
@@ -1048,7 +1061,7 @@ class Z3Translator:
             if len(expr) < 5:
                 raise TranslationError(f"comb_mux-bad-arity {len(expr)}")
             type_w = _type_of_annotation(expr[4], self.env) or (expected_width or self.default_width)
-            type_w = min(type_w, SWEEP_CAP)
+            type_w = _model_width(type_w)
             cond = self.translate(expr[1], 1)
             t_val = self.translate(expr[2], type_w)
             f_val = self.translate(expr[3], type_w)
@@ -1068,7 +1081,7 @@ class Z3Translator:
             a_w = _expr_result_width(expr[1], self.env)
             b_w = _expr_result_width(expr[2], self.env)
             op_w = a_w or b_w or expected_width or self.default_width
-            op_w = min(op_w, SWEEP_CAP)
+            op_w = _model_width(op_w)
             a = self.translate(expr[1], op_w)
             b = self.translate(expr[2], op_w)
             cmp_bool = self._apply_icmp(pred_code, a, b)
@@ -1079,7 +1092,7 @@ class Z3Translator:
             if len(expr) < 4:
                 raise TranslationError(f"comb_extract-bad-arity {len(expr)}")
             res_w = _type_of_annotation(expr[3], self.env) or (expected_width or self.default_width)
-            res_w = min(res_w, SWEEP_CAP)
+            res_w = _model_width(res_w)
             # Try to get a concrete lowBit. If the attr is symbolic
             # (the rule uses `?attr` as a placeholder), fall through
             # to the unknown-op UF path so both sides of the union
@@ -1099,7 +1112,7 @@ class Z3Translator:
                 return fn(src, attr_id[0])
             src_w_hint = _expr_result_width(expr[1], self.env) or self.default_width
             src_w_hint = max(src_w_hint, low + res_w)
-            src_w_hint = min(src_w_hint, SWEEP_CAP)
+            src_w_hint = _model_width(src_w_hint)
             src = self.translate(expr[1], src_w_hint)
             # z3 Extract takes (high, low, bv).
             high = low + res_w - 1
@@ -1111,7 +1124,7 @@ class Z3Translator:
             if len(expr) < 4:
                 raise TranslationError(f"comb_concat-bad-arity {len(expr)}")
             res_w = _type_of_annotation(expr[3], self.env) or (expected_width or self.default_width)
-            res_w = min(res_w, SWEEP_CAP)
+            res_w = _model_width(res_w)
             # We don't know individual operand widths in general;
             # translate `high` first, then fit the vec elements to
             # match `res_w - high_w`.
@@ -1146,9 +1159,9 @@ class Z3Translator:
             if len(expr) < 3:
                 raise TranslationError(f"comb_replicate-bad-arity {len(expr)}")
             res_w = _type_of_annotation(expr[2], self.env) or (expected_width or self.default_width)
-            res_w = min(res_w, SWEEP_CAP)
+            res_w = _model_width(res_w)
             src_w = _expr_result_width(expr[1], self.env) or 1
-            src_w = min(src_w, SWEEP_CAP)
+            src_w = _model_width(src_w)
             if res_w % src_w != 0:
                 raise WidthIncompatible(f"replicate-bad-ratio res={res_w} src={src_w}")
             n = res_w // src_w
@@ -1159,7 +1172,7 @@ class Z3Translator:
             if len(expr) < 4:
                 raise TranslationError(f"{head}-bad-arity {len(expr)}")
             type_w = _type_of_annotation(expr[3], self.env) or (expected_width or self.default_width)
-            type_w = min(type_w, SWEEP_CAP)
+            type_w = _model_width(type_w)
             a = self.translate(expr[1], type_w)
             b = self.translate(expr[2], type_w)
             if head == "comb_shl":
@@ -1172,7 +1185,7 @@ class Z3Translator:
             if len(expr) < 3:
                 raise TranslationError(f"hw_constant-bad-arity {len(expr)}")
             type_w = _type_of_annotation(expr[2], self.env) or (expected_width or self.default_width)
-            type_w = min(type_w, SWEEP_CAP)
+            type_w = _model_width(type_w)
             val = self._extract_const_value(expr[1])
             if val is None:
                 raise TranslationError("hw_constant-no-value")
@@ -1221,7 +1234,7 @@ class Z3Translator:
             arg_bvs.append(bv)
             arg_widths.append(bv.size())
         result_w = expected_width or self.default_width
-        result_w = min(result_w, SWEEP_CAP)
+        result_w = _model_width(result_w)
         fn = self._uf(head, tuple(arg_widths), result_w)
         return fn(*arg_bvs)
 
@@ -1317,7 +1330,7 @@ class Z3Translator:
 def _select_sweep(rule: ParsedRule) -> List[int]:
     widths = set(DEFAULT_SWEEP)
     for w in rule.annotated_widths:
-        widths.add(min(w, SWEEP_CAP))
+        widths.add(_model_width(w))
     return sorted(widths)
 
 
@@ -1357,7 +1370,10 @@ def verify_rule(rule: ParsedRule, sweep: Optional[List[int]] = None,
     for w in sweep:
         # Pick a sensible default_width for unconstrained variables in this
         # sweep run.
-        w_capped = min(w, SWEEP_CAP)
+        if w > SWEEP_CAP:
+            # Never prove at a smaller width than asked for.
+            return "UNKNOWN", f"width {w} exceeds the proof model's limit {SWEEP_CAP}"
+        w_capped = w
         if per_bitwidth_budget:
             solve_budget_ms = timeout_ms
         else:
@@ -1377,7 +1393,7 @@ def verify_rule(rule: ParsedRule, sweep: Optional[List[int]] = None,
             for var, expr in rule.premises:
                 # ?var's width is determined by the env; default if absent.
                 w_var = env.widths.get(var, w_capped)
-                w_var = min(w_var, SWEEP_CAP)
+                w_var = _model_width(w_var)
                 bv_var = t._get_var(var, w_var)
                 bv_expr = t.translate(expr, w_var)
                 if bv_var.size() != bv_expr.size():
@@ -1389,7 +1405,7 @@ def verify_rule(rule: ParsedRule, sweep: Optional[List[int]] = None,
 
             # Translate the union goal.
             lhs_w = env.widths.get(rule.lhs_var, w_capped)
-            lhs_w = min(lhs_w, SWEEP_CAP)
+            lhs_w = _model_width(lhs_w)
             lhs_bv = t._get_var(rule.lhs_var, lhs_w)
             rhs_bv = t.translate(rule.rhs_expr, lhs_w)
             if lhs_bv.size() != rhs_bv.size():
@@ -1584,7 +1600,7 @@ def cmd_one(args: argparse.Namespace) -> int:
 
     sweep_override = None
     if args.bitwidth is not None:
-        sweep_override = [min(args.bitwidth, SWEEP_CAP)]
+        sweep_override = [_model_width(args.bitwidth)]
 
     timeout_ms = _resolve_timeout_ms(args)
     per_bw = bool(getattr(args, "per_bitwidth_budget", False))

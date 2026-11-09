@@ -44,6 +44,10 @@ VERIFIER_SOURCE = Path(zv.__file__)
 STATUSES = ("PROVED", "REFUTED", "UNKNOWN", "UNSUPPORTED", "REJECTED")
 DEFAULT_TIMEOUT_MS = 60000
 DEFAULT_MAX_WIDTH = 256
+# Hard limit of the proof model (z3verify.SWEEP_CAP). No caller-supplied
+# max_width can raise it: the model never proves at a smaller width than the
+# instance's, it refuses.
+MODEL_MAX_WIDTH = zv.SWEEP_CAP
 
 # Argument kinds of the CIRCT constructors declared in the egglog template
 # (circt.egg). Index of the Type argument for each constructor; used to find
@@ -269,7 +273,7 @@ def validate_rule_text(rule_text: str) -> Tuple[Optional[list], str]:
 
 # Bumped whenever admission semantics change; part of every certificate's
 # verifier identity (together with the source hashes of this module and z3verify).
-CERT_SEMANTICS = "signless-types-v5"
+CERT_SEMANTICS = "exact-widths-v6"
 _PAT_PREFIX = "?cv"          # pattern variables  -> ?cv1, ?cv2, ...
 _LET_PREFIX = "cedar_let_"   # let-bound names    -> cedar_let_1, ...
 
@@ -488,6 +492,9 @@ def prove_instance(rule_name: str, rule_text: str, width: int, sigs: Dict[str, L
             created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         ), inst
 
+    if width > MODEL_MAX_WIDTH:
+        return cert("UNSUPPORTED", f"width {width} exceeds the proof model's limit {MODEL_MAX_WIDTH} "
+                                   "(independent of max_width)")
     if width > max_width:
         return cert("UNSUPPORTED", f"width {width} exceeds max_width {max_width}")
     banned = zv.check_banned_op(rule_text)
@@ -885,7 +892,9 @@ def admit(rules: Dict[str, str], widths: Iterable[int], store: Optional[Certific
         targets = sorted(set(widths)) if tvars else (sorted(set(concrete) - {1}) or [1])
         for w in targets:
             proc.check()
-            cached = store.get(sha, w) if store else None
+            # Widths beyond the limits are decided here, never by a cached certificate.
+            within = w <= min(max_width, MODEL_MAX_WIDTH)
+            cached = store.get(sha, w) if (store and within) else None
             inst, _ = specialize(text, w, sigs)
             if cached is not None and inst is not None and cached.instance_sha256 == rule_sha(inst):
                 c = cached

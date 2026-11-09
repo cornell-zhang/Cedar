@@ -79,7 +79,10 @@ operand -- including operands inside `vec-of`/`vec-push` literals, attribute
 or type arguments and the right-hand side -- must get its width from the match
 premises alone, with the proof using that same width; unknown constructors
 and unclassifiable variables are rejected. Widths above `max_width` (256)
-are unsupported. Certificates are keyed by the SHA-256 of the rule text, the
+are unsupported, and so is any width above the proof model's limit (2^20)
+whatever `max_width` a caller passes: the verifier models every width exactly
+or refuses (it never clamps to a smaller width), and cached certificates are
+not consulted beyond these limits. Certificates are keyed by the SHA-256 of the rule text, the
 width and a hash of the verifier code, the admission-semantics version and
 the Z3 version; any change forces a new proof. Within a run, instances are
 applied only through the recorded admission inventory: each instance file must

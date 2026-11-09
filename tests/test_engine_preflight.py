@@ -186,3 +186,15 @@ def test_stale_verifier_instances_are_reproved_or_rejected(tmp_path, toolchain, 
     (run.dir / "run.json").write_text(json.dumps(s))
     with pytest.raises(WorkflowError, match="older verifier"):
         Run(run.dir)._instances(["add_commute"])
+
+
+def test_recorded_instance_beyond_the_certified_width_range_is_refused(tmp_path, toolchain, monkeypatch):
+    from cedar.workflow.engine import WorkflowError
+    run = _admitted_run(tmp_path, toolchain, monkeypatch)
+    e = run.s["rules"]["admitted_instances"][0]
+    wide = 1 << 21
+    e["width"] = e["certificate"]["width"] = wide
+    run.s["analysis"]["widths"].append(wide)
+    run.save()
+    with pytest.raises(WorkflowError, match="beyond the certified range"):
+        Run(run.dir)._checked_instances()

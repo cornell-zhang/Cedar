@@ -371,7 +371,7 @@ def test_certificates_from_older_semantics_are_not_reused(rule, tmp_path, templa
     old.put(forged)                                   # what the previous verifier version recorded
     assert old.get(C.rule_sha(rule), forged.width) is not None
     monkeypatch.setattr(C, "verifier_hash", lambda: real)
-    assert real != "0ld-vector-model" and C.CERT_SEMANTICS == "signless-types-v5"
+    assert real != "0ld-vector-model" and C.CERT_SEMANTICS == "exact-widths-v6"
     adm = C.admit({"two": rule}, [1, 8], C.CertificateStore(tmp_path, template_sigs), template_sigs)
     assert not adm.admitted and adm.rejected[0].status in ("REFUTED", "UNSUPPORTED")
 
@@ -542,3 +542,71 @@ def test_pipeline_reads_signed_and_unsigned_widths():
     text = "(I8) (Int 12) (SInt 16) (UInt 24) (F32)"
     assert pipeline.widths_in(text) == [8, 12, 16, 24]
     assert pipeline.non_signless_types_in(text) == ["F32", "SInt", "UInt"]
+
+
+# --- review regression: widths are modeled exactly or not at all ---
+
+def _wide(w):
+    t = f"(Int {w})"
+
+    def k(v):
+        return f'(hw_constant (NamedAttr "value" (IntegerAttr {v} {t})) {t})'
+    lhs, rhs = f"(comb_shl {k(1)} {k(w - 1)} {t})", k(0)
+    return f"(rewrite {lhs} {rhs} :ruleset rules)", lhs, rhs
+
+
+WIDE = (1 << 20) + 1     # one bit above the proof model's limit
+
+
+def test_width_beyond_the_model_is_never_proved(tmp_path, toolchain, template_sigs):
+    """1 << (w-1) is nonzero at width w; it is zero only at a clamped width."""
+    from cedar.rules import z3verify as zv
+    assert WIDE == zv.SWEEP_CAP + 1 == C.MODEL_MAX_WIDTH + 1
+    rule, lhs, rhs = _wide(WIDE)
+    c, _ = C.prove_instance("wide_shift", rule, WIDE, template_sigs, max_width=WIDE, timeout_ms=2000)
+    assert c.status == "UNSUPPORTED" and "proof model" in c.detail, (c.status, c.detail)
+    adm = C.admit({"wide_shift": rule}, [WIDE], None, template_sigs, timeout_ms=2000, max_width=10 * WIDE)
+    assert not adm.admitted
+    assert not _egglog_holds(toolchain, tmp_path, [], lhs, rhs, "no_rules")
+    assert _egglog_holds(toolchain, tmp_path, [rule], lhs, rhs, "control")          # the raw rule is unsound
+    assert not _egglog_holds(toolchain, tmp_path, [i.text for i in adm.admitted], lhs, rhs, "admitted")
+
+
+def test_verifier_refuses_widths_beyond_its_model(template_sigs, monkeypatch, tmp_path):
+    from cedar.rules import z3verify as zv
+    rule, _, _ = _wide(WIDE)
+    monkeypatch.setattr(C, "MODEL_MAX_WIDTH", 10 * WIDE)            # admission limit bypassed
+    c, _ = C.prove_instance("wide_shift", rule, WIDE, template_sigs, max_width=10 * WIDE, timeout_ms=2000)
+    assert c.status != "PROVED", c.detail
+    f = tmp_path / "wide.egg"
+    f.write_text(rule)
+    parsed, err = zv.parse_rule_file(f)
+    assert parsed is not None, err
+    for sweep in ([WIDE], [8]):                                     # sweep width and a nested wide type
+        status, detail = zv.verify_rule(parsed, sweep=sweep, timeout_ms=2000)
+        assert status == "UNKNOWN" and "limit" in detail, (sweep, status, detail)
+
+
+def test_cached_certificates_cannot_bypass_the_width_gate(tmp_path, template_sigs):
+    rule, _, _ = _wide(WIDE)
+    store = C.CertificateStore(tmp_path / "certs", template_sigs)
+    forged = C.Certificate(rule_sha256=C.rule_sha(rule), rule_name="wide_shift", width=WIDE, status="PROVED",
+                           detail="forged", instance_sha256=C.rule_sha(C.specialize(rule, WIDE, template_sigs)[0]),
+                           verifier=C.verifier_hash(), z3_version="x", timeout_ms=1, seconds=0.0, created_at="x")
+    store.put(forged)
+    assert store.get(C.rule_sha(rule), WIDE) is not None
+    for mw in (WIDE, C.DEFAULT_MAX_WIDTH):
+        adm = C.admit({"wide_shift": rule}, [WIDE], store, template_sigs, timeout_ms=2000, max_width=mw)
+        assert not adm.admitted and adm.rejected[0].status == "UNSUPPORTED"
+
+
+def test_certify_cli_rejects_widths_beyond_the_model(tmp_path, toolchain, capsys):
+    from cedar.cli import main
+    rule, _, _ = _wide(WIDE)
+    f = tmp_path / "wide_shift.egg"
+    f.write_text(rule + "\n")
+    sel = ["--toolchain-prefix", str(toolchain.bin_dir.parent)] if toolchain.bin_dir.name == "bin" else []
+    rc = main(["rules", "certify", str(f), "--widths", str(WIDE), "--max-width", str(WIDE),
+               "--timeout-ms", "2000", "--no-cache"] + sel)
+    out = capsys.readouterr().out
+    assert rc != 0 and "UNSUPPORTED" in out and "PROVED" not in out.replace("UNSUPPORTED", "")

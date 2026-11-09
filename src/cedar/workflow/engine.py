@@ -958,6 +958,8 @@ class Run:
             cert = e["certificate"]
             if cert.get("status") != "PROVED" or cert.get("width") != e["width"] or e["width"] not in widths:
                 raise WorkflowError(f"rule instance {fname}: no PROVED certificate for a width of this design")
+            if e["width"] > min(certify.DEFAULT_MAX_WIDTH, certify.MODEL_MAX_WIDTH):
+                raise WorkflowError(f"rule instance {fname}: width {e['width']} is beyond the certified range")
             if cert.get("verifier") != current:
                 src = (self.s["rules"].get("sources") or {}).get(e["rule"])
                 if src is None or certify.rule_sha(src) != e["rule_sha256"]:

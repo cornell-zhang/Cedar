@@ -415,6 +415,24 @@ tests fail.
   validation process started) and an enclosing deadline (restored; the tighter
   one wins).
 
+## Twelfth review: widths beyond the proof model
+
+* The certifier accepted any width allowed by the caller's `max_width`, while
+  the verifier silently clamped widths to its limit (2^20). With a raised
+  `--max-width`, `1 << 1048576 -> 0` was PROVED at width 1048577 (true only at
+  the clamped width) and its instance equated unequal terms in real egglog.
+* The verifier now models every width exactly or refuses: each former clamp
+  raises `WidthBeyondModel` (UNKNOWN, never admitted) and a sweep width above
+  the limit returns UNKNOWN. Independently, the certifier rejects widths above
+  the model limit before translation regardless of `max_width`, admission
+  never consults a cached certificate beyond the limits, and a recorded run
+  instance beyond the certified range stops the run. Certificate semantics
+  `exact-widths-v6` re-proves stored certificates.
+* The reviewer's command now exits 1 with UNSUPPORTED. Regressions: the
+  counterexample through the API with a raised `max_width` and through the
+  real CLI, real egglog controls, the verifier alone (sweep and nested wide
+  type), forged cached certificates, and a recorded wide run instance.
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.

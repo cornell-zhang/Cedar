@@ -591,7 +591,9 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("files", nargs="+")
     q.add_argument("--widths", required=True, help="comma-separated bit widths, e.g. 8,16")
     q.add_argument("--timeout-ms", type=int, default=60000)
-    q.add_argument("--max-width", type=int, default=256)
+    q.add_argument("--max-width", type=int, default=256,
+                   help="largest width to certify (default 256); widths above the proof model limit "
+                        "(2^20) are always unsupported")
     q.add_argument("--no-cache", action="store_true")
     common(q)
     q.set_defaults(fn=cmd_rules)

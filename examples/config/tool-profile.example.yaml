@@ -1,0 +1,24 @@
+# Example Cedar tool profile (cedar/tool-profile@1). Copy to
+# ~/.config/cedar/profiles/<name>.yaml (or let the cedar-setup skill write it with
+# `cedar setup write-profile`) and adapt. Keep the real file private.
+schema: cedar/tool-profile@1
+name: my-site
+description: EDA tools at my site
+environment:
+  # Bash file sourced before every tool invocation: module loads, PATH,
+  # license variables. Put site-specific commands there, not in Cedar.
+  setup_script: ${CEDAR_SITE_ENV}
+  env_required: []                  # e.g. [LM_LICENSE_FILE]; names only
+execution:
+  nice: 10
+  threads: 4
+  max_parallel: 2
+tools:
+  synthesis:   {adapter: synopsys-dc,        executable: dc_shell,  timeout_s: 1800}
+  place_route: {adapter: cadence-innovus,    executable: innovus,   timeout_s: 3600}
+  simulation:  {adapter: synopsys-vcs,       executable: vcs,       timeout_s: 1800}
+  saif:        {adapter: synopsys-vcd2saif,  executable: vcd2saif,  timeout_s: 600}
+  power:       {adapter: synopsys-primetime, executable: pt_shell,  timeout_s: 1800}
+  equivalence: {adapter: cadence-conformal,  executable: lec,       timeout_s: 1800}
+# toolchain:
+#   prefix: /opt/cedar-toolchain-0.1.0   # omit to use the cedar-toolchain wheel

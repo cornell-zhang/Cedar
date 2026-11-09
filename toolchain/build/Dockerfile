@@ -41,7 +41,7 @@ RUN gcc --version | head -1 && clang --version | head -1 && cmake --version | he
 # and build scripts are copied first so third_party edits do not invalidate
 # the long LLVM layer.
 COPY toolchain/sources.lock.json /cedar/toolchain/sources.lock.json
-COPY toolchain/scripts /cedar/toolchain/scripts
+COPY toolchain/scripts/lock.py /cedar/toolchain/scripts/lock.py
 COPY toolchain/build/build-native.sh /cedar/toolchain/build/build-native.sh
 RUN /cedar/toolchain/build/build-native.sh fetch
 RUN JOBS=${JOBS} LINK_JOBS=${LINK_JOBS} /cedar/toolchain/build/build-native.sh llvm
@@ -53,6 +53,7 @@ COPY third_party /cedar/third_party
 RUN JOBS=${JOBS} /cedar/toolchain/build/build-native.sh dialegg gym
 
 # Stage 3: templates, notices, install tree, ABI + smoke checks.
+COPY toolchain/scripts /cedar/toolchain/scripts
 COPY toolchain/templates /cedar/toolchain/templates
 COPY LICENSE THIRD_PARTY_NOTICES.md /cedar/
 RUN /cedar/toolchain/build/build-native.sh install check \

@@ -1,0 +1,29 @@
+# Example Cedar technology profile (cedar/technology@1) for a standard-cell
+# library. All paths are placeholders; ${PDK_ROOT} must be set when Cedar
+# loads the profile (or use absolute paths). Keep the real file private.
+schema: cedar/technology@1
+name: mypdk-tt
+description: My PDK, regular-Vt cells, typical corner
+units: {time: ps}                     # library time unit
+default_corner: tt
+corners:
+  tt:
+    db: ["${PDK_ROOT}/db/*_TT.db"]
+    liberty: ["${PDK_ROOT}/lib/*_TT.lib"]
+    sim_models: ["${PDK_ROOT}/verilog/*_TT.v"]
+    rc_tech: ${PDK_ROOT}/qrc/qrcTechFile
+lef:
+  tech: ${PDK_ROOT}/lef/tech.lef
+  cells: ["${PDK_ROOT}/lef/cells.lef"]
+synthesis:
+  max_transition: 50.0                # library time units
+  input_transition_max: 60.0
+  input_transition_min: 20.0
+place_route:
+  site: coreSite
+  core_utilization: 0.6
+  core_margin: 4.0
+  filler_cells: [FILLER_CELL_1, FILLER_CELL_2]
+  max_route_layer: 6
+  route_top_layer: 5
+  route_bottom_layer: 2

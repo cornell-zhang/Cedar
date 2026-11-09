@@ -1,0 +1,28 @@
+# Example Cedar design spec (cedar/design@1) for examples/dist_mac.
+# Profiles are referenced by name (looked up in $CEDAR_CONFIG_HOME) or path;
+# override them with `cedar run start --profile ... --technology ...`.
+schema: cedar/design@1
+name: dist_mac
+top: dist_mac
+rtl: [rtl/dist_mac.v]
+profiles:
+  tools: my-site
+  technology: mypdk-tt
+clocks:
+  - {port: clk, name: clk, period_ns: 1.0}   # your timing goal
+resets:
+  - {port: rst, active: high, synchronous: true}
+activity:
+  mode: testbench
+  testbench: tb/tb_activity.v
+  tb_top: Top
+  dut_instance: DUT
+verification:
+  mode: conformal                    # or: simulation (with testbench: tb/tb_check.v)
+objective:
+  preset: balanced
+measurement:
+  mode: full-ppa
+  approximate_pruning: false
+search:
+  preset: quick

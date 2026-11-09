@@ -109,6 +109,10 @@ TECHNOLOGY = {
         "power_rail_layer_range": F("list", item=F("str"), default=["M1", "M3"]),
         "post_init_hook": F("path", doc="Tcl sourced after init_design"),
         "pre_route_hook": F("path", doc="Tcl sourced before routeDesign"),
+        "accepted_errors": F("list", item=F("str"), default=[],
+                             doc="Innovus message IDs (e.g. IMPTR-2101) known to be harmless for this technology; "
+                                 "accepted only during floorplan/power-route/place/route/filler/hook steps and "
+                                 "recorded with the stage result. Any other Innovus error fails P&R."),
     }),
     "equivalence": F("obj", fields={
         "extra_commands": F("list", item=F("str"), default=[], doc="Conformal dofile commands inserted before 'set system mode lec'"),

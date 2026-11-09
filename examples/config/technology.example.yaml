@@ -27,3 +27,6 @@ place_route:
   max_route_layer: 6
   route_top_layer: 5
   route_bottom_layer: 2
+  # Innovus error IDs that are known to be harmless for this technology; accepted only
+  # outside design/constraint reading, extraction and output writing. Default: none.
+  accepted_errors: []

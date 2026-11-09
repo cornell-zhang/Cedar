@@ -67,9 +67,40 @@ place_route:
   route_top_layer: 5
   route_bottom_layer: 2
   post_init_hook: hooks/innovus_post_init.tcl
+  accepted_errors: []                  # Innovus message IDs known to be harmless for this
+                                       # technology (e.g. [IMPTR-2101] for ASAP7's M10 pitch);
+                                       # see "Measurement gates" below
 equivalence:
   extra_commands: []                   # Conformal dofile commands before 'set system mode lec'
 ```
+
+### Measurement gates
+
+EDA tools report most command failures as messages and still reach the end of
+the script with exit status 0, so Cedar judges every measurement stage on the
+tool's own messages and evidence (recorded per stage in `run.json`):
+
+* **DC / PrimeTime** — any `Error:` or `Fatal:` message fails the stage (the
+  scripts also set `sh_script_stop_severity E`); this covers the SDC, hooks,
+  compile and reports.
+* **PrimeTime power** additionally requires the background `read_parasitics`
+  summary for the post-route SPEF with `0 error(s)` and annotated nets, at
+  least 95% of internal pin-to-pin nets with parasitics, and SAIF activity on
+  at least 90% of nets.
+* **VCS activity** requires a completed `$sdf_annotate` of the post-route SDF
+  on `<tb_top>.<dut_instance>` with zero errors, no aborted annotation or
+  `SDF Error`, and annotated instances in `sdfAnnotateInfo`.
+* **Innovus** fails on every `**ERROR` and on skipped/failed SDC commands
+  (`CTE-*`), and checks the post-route netlist, SPEF and SDF. A technology may
+  list specific error IDs in `place_route.accepted_errors`; they are accepted
+  only during floorplan, power routing, placement, routing, filler insertion
+  and the hooks, and every accepted occurrence is recorded. Errors while
+  reading the design and constraints, extracting, writing outputs or timing
+  are never accepted.
+
+A failed stage makes the affected metrics unavailable; the baseline is then
+rejected and a candidate is excluded from acceptance, the frontier and
+successful-iteration credit.
 
 ## 3. Design spec — `cedar/design@1`
 

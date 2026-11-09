@@ -208,6 +208,54 @@ with regression tests before the release runs above:
   premise-fixed operand nested in `vec-of` still proves and runs, and a test
   pins the declared sorts against the toolchain templates.
 
+## Sixth review: measurement gates that failed open
+
+Real-tool negative probes showed three stages accepting failed tool steps
+because only the exit status and Cedar's own completion marker were checked:
+
+* PrimeTime with a malformed or missing SPEF (`SPFP-100` / `PARA-001` in the
+  background `read_parasitics` log, zero annotated nets) returned
+  `power = 217.7 uW, measured`.
+* DC with an SDC containing an invalid command (`CMD-005`) returned measured
+  area, delay and slack.
+* VCS with a malformed or missing SDF (`SDF annotation aborted`, reported only
+  as a warning with zero errors) produced SAIF and an `ok` activity stage.
+
+Every generated script now announces its steps and each stage is judged on the
+tool's own messages and evidence (see `docs/configuration.md`, "Measurement
+gates"): any DC/PrimeTime `Error:`/`Fatal:` message fails the stage; PrimeTime
+must show the read_parasitics summary for the post-route SPEF with zero errors
+and annotated nets, and >= 95% of internal pin-to-pin nets annotated; VCS must
+show a completed, error-free SDF annotation of the post-route SDF on the
+intended instance with annotated instances; Innovus fails on every error and on
+skipped/failed SDC commands (`CTE-*`, which Innovus reports as warnings) unless
+a technology explicitly accepts an ID for a non-critical step, and its netlist,
+SPEF and SDF are content-checked. The baseline now also requires every stage
+to be `ok`. The evidence is recorded with each stage result.
+
+Rechecked with the real tools (copies of the reviewer probes, outputs outside
+the reviewer's evidence): the SDC probe fails synthesis (`constraints: CMD-005`;
+area/delay/slack unavailable); the malformed/missing SPEF probes fail power
+(`SPFP-100` / `PARA-001`, power unavailable); the malformed/missing SDF probes
+fail activity (`SDF annotation aborted` / `SDF Error`). Innovus with the same bad
+SDC fails in `init` (`CTE-25`), and without an accepted list fails on ASAP7's
+`IMPTR-2101` (`power_route`). A positive measurement with valid inputs is
+complete with unchanged values (area 893.696 um2, power 229.6 uW, SPEF 683 nets
+/ 100% internal coverage, SDF 599/607 instances, SAIF 100%); harmless warnings
+(UITE-489, PTE-003, SDFCOM_UHICD, IMPLF-45, ...) remain accepted. The ASAP7
+technology profiles used for validation accept `IMPTR-2101` (M10 pitch,
+reported by `sroute`; M10 is never routed).
+
+Regressions (`tests/test_measurement_gates.py`) run the stage adapters and
+`measure()` against stand-in tools that emit the real message formats and exit
+0: constraint/compile errors in DC and PrimeTime, malformed and missing SPEF,
+aborted and missing SDF, Innovus errors in critical steps, skipped SDC commands,
+missing SPEF output and unaccepted IDs all fail their stage and leave the
+metrics unavailable; with real engine runs a failed baseline stage stops the
+run, and a failed candidate stage keeps the candidate out of acceptance, the
+frontier and successful-iteration credit. Disabling any one gate makes these
+tests fail.
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.

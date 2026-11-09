@@ -18,12 +18,13 @@ Measurement convention (``full-ppa``, matching the paper's setup):
 from __future__ import annotations
 
 import glob
+import os
 import re
 import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..config import Loaded
 from ..metrics import Metric
@@ -146,6 +147,97 @@ def _lib_or_default(ctx: "FlowContext", value: Optional[float], default_ns: floa
     return float(value) if value is not None else ctx.to_lib_time(default_ns)
 
 
+# ------------------------------------------------------- tool-error gates
+#
+# Reaching a script's final marker does not establish success: Synopsys and
+# Cadence tools report most command failures as messages and carry on. Every
+# generated script therefore announces its steps (``CEDAR_STEP <name>``) and
+# each stage is judged on the tool's own error messages per step, on explicit
+# checks of the evidence it produced (annotation summaries, output files) and
+# only then on its exit status and completion marker. The judgement is kept
+# in ``StageResult.evidence``.
+
+# Synopsys shells (DC, PrimeTime): stop a script at the first Error message.
+_SNPS_PRELUDE = "set_app_var sh_script_stop_severity E"
+_SNPS_ERROR = re.compile(r"^(Error|Fatal):\s*(.*)$")
+_CDNS_ERROR = re.compile(r"\*\*ERROR:\s*\(([A-Z][A-Z0-9_]*-\d+)\):?\s*(.*)$")
+# Innovus' timing-constraint engine reports skipped/failed SDC commands as
+# "WARNING (CTE-n)" / "ERROR (CTE-n)"; a skipped constraint means P&R would run
+# under different constraints than synthesis, so these count as errors.
+_CTE_PROBLEM = re.compile(r"\b(?:ERROR|WARNING)\s*\((CTE-\d+)\):?\s*(.*)$")
+_MSG_CODE = re.compile(r"\(([A-Z][A-Z0-9_]*-\d+)\)\s*$")
+# Markers are matched anywhere in a line: Innovus interleaves its own output
+# with ``puts``. Echoed commands carry ``$step`` and never match a step name.
+_STEP = re.compile(r"CEDAR_STEP ([a-z][a-z0-9_]*)\b")
+_CEDAR_ERROR = re.compile(r"CEDAR_ERROR ([a-z][a-z0-9_]*)?:?\s*(.*)$")
+
+
+def tool_errors(text: str, style: str = "synopsys") -> List[Dict[str, str]]:
+    """Error messages of a tool log, each tagged with the step it occurred in.
+
+    ``synopsys``: ``Error: ... (CODE-N)`` / ``Fatal: ...`` lines (the code may
+    be on a continuation line). ``cadence``: ``**ERROR: (CODE-N): ...``.
+    Cedar's own ``CEDAR_ERROR <step>: ...`` lines are included as ``CEDAR``.
+    """
+    out: List[Dict[str, str]] = []
+    step = "setup"
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        m = _STEP.search(line)
+        if m:
+            step = m.group(1)
+        c = _CEDAR_ERROR.search(line)
+        if c and not re.search(r"puts\s+\\?\"?CEDAR_ERROR", line):
+            out.append({"step": c.group(1) or step, "code": "CEDAR", "message": c.group(2)[:240]})
+            continue
+        if style == "synopsys":
+            e = _SNPS_ERROR.match(line)
+            if e:
+                code = None
+                for nxt in lines[i:i + 4]:
+                    cm = _MSG_CODE.search(nxt)
+                    if cm:
+                        code = cm.group(1)
+                        break
+                out.append({"step": step, "code": code or e.group(1).upper(), "message": e.group(2)[:240]})
+        else:
+            e = _CDNS_ERROR.search(line) or _CTE_PROBLEM.search(line)
+            if e:
+                out.append({"step": step, "code": e.group(1), "message": e.group(2)[:240]})
+    return out
+
+
+def steps_seen(text: str) -> List[str]:
+    seen: List[str] = []
+    for line in text.splitlines():
+        m = _STEP.search(line)
+        if m and m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def _read(path: Path) -> str:
+    return path.read_text(errors="replace") if path.is_file() else ""
+
+
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return os.path.realpath(a) == os.path.realpath(b)
+    except (OSError, ValueError):
+        return False
+
+
+def _fail(r: StageResult, detail: str) -> StageResult:
+    r.status, r.detail = "failed", detail[:500]
+    return r
+
+
+def _first(errs: List[Dict[str, str]]) -> str:
+    e = errs[0]
+    more = f" (+{len(errs) - 1} more)" if len(errs) > 1 else ""
+    return f"{e['step']}: {e['code']}: {e['message']}{more}"
+
+
 # ---------------------------------------------------------------- parsers
 
 def parse_dc_area(rpt: Path) -> Optional[float]:
@@ -188,6 +280,112 @@ def parse_pt_power(rpt: Path) -> Optional[float]:
     return float(m.group(1)) * {"W": 1.0, "mW": 1e-3, "uW": 1e-6, "nW": 1e-9, "pW": 1e-12}[unit]
 
 
+PARASITIC_MIN_PCT = 95.0       # internal pin-to-pin nets with annotated RC
+
+
+def parse_parasitics_log(log: Path, spef: str) -> Dict[str, Any]:
+    """PrimeTime's ``read_parasitics`` log (written by the background reader).
+
+    ``ok`` requires the summary report for exactly ``spef`` with zero errors and
+    at least one annotated net, and no ``Error`` message in the log.
+    """
+    txt = _read(log)
+    ev: Dict[str, Any] = {"log": str(log), "present": bool(txt)}
+    rep = re.search(r"^Report\s*:\s*read_parasitics\s+(\S+)", txt, re.M)
+    errs = re.search(r"^\s*(\d+)\s+error\(s\)", txt, re.M)
+    nets = re.search(r"Annotated nets\s*:\s*(\d+)", txt)
+    ev.update({"report_for": rep.group(1) if rep else None, "errors": int(errs.group(1)) if errs else None,
+               "annotated_nets": int(nets.group(1)) if nets else None,
+               "messages": [e["code"] + ": " + e["message"] for e in tool_errors(txt)][:5]})
+    problems = []
+    if not txt:
+        problems.append("no read_parasitics log")
+    elif not rep or not _same_file(rep.group(1), spef):
+        problems.append("no read_parasitics summary for the post-route SPEF")
+    if ev["messages"]:
+        problems.append(ev["messages"][0])
+    if ev["errors"] is None or ev["errors"] != 0:
+        problems.append(f"read_parasitics reported {ev['errors']} error(s)")
+    if not ev["annotated_nets"]:
+        problems.append("no nets annotated from SPEF")
+    ev["ok"] = not problems
+    ev["problems"] = problems
+    return ev
+
+
+def parse_annotated_parasitics(rpt: Path) -> Dict[str, Any]:
+    """``report_annotated_parasitics -check``: internal pin-to-pin net coverage."""
+    txt = _read(rpt)
+    ev: Dict[str, Any] = {"report": str(rpt), "present": bool(txt)}
+    sec = txt.split("Internal nets", 1)[1] if "Internal nets" in txt else ""
+    m = re.search(r"Pin to pin nets\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)", sec)
+    if m:
+        total, not_ann = int(m.group(1)), int(m.group(5))
+        ev.update({"internal_pin_to_pin_nets": total, "not_annotated": not_ann,
+                   "annotated_pct": round(100.0 * (total - not_ann) / total, 2) if total else None})
+    pct = ev.get("annotated_pct")
+    ev["ok"] = pct is not None and pct >= PARASITIC_MIN_PCT
+    ev["problems"] = [] if ev["ok"] else [
+        "no parasitic annotation report" if not txt else
+        f"only {pct}% of internal nets have parasitics (< {PARASITIC_MIN_PCT}%)"]
+    return ev
+
+
+def check_sdf_annotation(compile_log: Path, info: Path, sdf: str, scope: str) -> Dict[str, Any]:
+    """VCS ``$sdf_annotate`` evidence for exactly ``sdf`` on instance ``scope``.
+
+    Requires a completed annotation of that file and scope with zero errors,
+    no aborted annotation or ``SDF Error`` anywhere, and annotated instances and
+    IOPATH delays in ``sdfAnnotateInfo``. VCS reports some fatal annotation
+    problems only as warnings, so the outcome lines are what count.
+    """
+    txt = _read(compile_log)
+    ev: Dict[str, Any] = {"compile_log": str(compile_log), "info": str(info)}
+    blocks = txt.split("$sdf_annotate()")[1:]
+    match = None
+    for b in blocks:
+        f = re.search(r'SDF file:\s*"([^"]+)"', b)
+        sc = re.search(r"Annotation scope:\s*(\S+)", b)
+        if f and _same_file(f.group(1), sdf) and sc and sc.group(1) == scope:
+            match = b
+            break
+    problems = []
+    if not blocks:
+        problems.append("no SDF annotation in the compile log")
+    elif match is None:
+        problems.append(f"no SDF annotation of {os.path.basename(sdf)} on {scope}")
+    else:
+        te = re.search(r"Total errors:\s*(\d+)", match)
+        ev["sdf_errors"] = int(te.group(1)) if te else None
+        ev["completed"] = bool(re.search(r"SDF annotation completed", match))
+        if not ev["completed"]:
+            problems.append("SDF annotation did not complete")
+        if ev["sdf_errors"] != 0:
+            problems.append(f"SDF annotation reported {ev['sdf_errors']} error(s)")
+    if re.search(r"SDF annotation aborted", txt):
+        problems.append("SDF annotation aborted")
+    sdf_err = re.search(r"SDF Error:.*", txt)
+    if sdf_err:
+        problems.append(sdf_err.group(0)[:200])
+    vcs_err = re.search(r"^Error-\[[^\]]+\].*", txt, re.M)
+    if vcs_err:
+        problems.append(vcs_err.group(0)[:200])
+    itxt = _read(info)
+    ann = itxt.split("Annotated entries in elaborated design", 1)[1] if "Annotated entries in elaborated design" in itxt else ""
+    ann = ann.split("Static entries", 1)[0]
+    ai = re.search(r"Annotated instances\s*=\s*(\d+)", ann)
+    ti = re.search(r"Total instances\s*=\s*(\d+)", ann)
+    io = re.search(r"IOPATH Delays\s*=\s*(\d+)", ann)
+    ev.update({"annotated_instances": int(ai.group(1)) if ai else None,
+               "total_instances": int(ti.group(1)) if ti else None,
+               "annotated_iopath_delays": int(io.group(1)) if io else None})
+    if not ev["annotated_instances"] or not ev["annotated_iopath_delays"]:
+        problems.append("sdfAnnotateInfo shows no annotated instances/IOPATH delays")
+    ev["ok"] = not problems
+    ev["problems"] = problems
+    return ev
+
+
 def parse_saif_coverage(pt_log: Path) -> Optional[float]:
     """Percent of nets annotated from SAIF, from PrimeTime's read_saif summary."""
     if not pt_log.is_file():
@@ -209,6 +407,8 @@ def synthesize(ctx: FlowContext, rtl: Sequence[str], work: Path, timeout: Option
     hdl = detect_hdl(rtl)
     defines = " ".join(f"{k}={v}" if v not in (None, "") else k for k, v in ctx.defines.items())
     lines = [
+        _SNPS_PRELUDE,
+        "puts \"CEDAR_STEP setup\"",
         "set hdlin_enable_rtlinfo true",
         "set verilogout_show_unconnected_pins true",
         f"set_host_options -max_cores {ctx.tools.threads}",
@@ -220,11 +420,14 @@ def synthesize(ctx: FlowContext, rtl: Sequence[str], work: Path, timeout: Option
         "set compile_dp_optimization false",
         f"set_app_var search_path [concat [get_app_var search_path] {tcl_list(ctx.include_dirs)}]",
         "define_design_lib WORK -path ./WORK",
+        "puts \"CEDAR_STEP read_design\"",
         f"if {{[catch {{analyze -format {hdl} {('-define {' + defines + '} ') if defines else ''}{tcl_list(list(rtl))}}} e]}} {{ puts \"CEDAR_ERROR analyze: $e\"; exit 2 }}",
         f"if {{![elaborate {ctx.top}]}} {{ puts \"CEDAR_ERROR elaborate failed\"; exit 2 }}",
         f"current_design {ctx.top}",
         "if {![link]} { puts \"CEDAR_ERROR link failed\"; exit 2 }",
+        "puts \"CEDAR_STEP constraints\"",
         f"source {{{sdc}}}",
+        "puts \"CEDAR_STEP design_rules\"",
         f"set_max_fanout {syn.get('max_fanout', 16)} [current_design]",
         f"set_max_transition {_lib_or_default(ctx, syn.get('max_transition'), 0.050):.6g} [all_outputs]",
         f"set_input_transition -max {_lib_or_default(ctx, syn.get('input_transition_max'), 0.060):.6g} [all_inputs]",
@@ -233,15 +436,17 @@ def synthesize(ctx: FlowContext, rtl: Sequence[str], work: Path, timeout: Option
     for cell in syn.get("dont_use") or []:
         lines.append(f"set_dont_use [get_lib_cells {cell}]")
     if ctx.hook("synthesis", "pre_compile_hook"):
-        lines.append(f"source {{{ctx.hook('synthesis', 'pre_compile_hook')}}}")
+        lines += ["puts \"CEDAR_STEP pre_compile_hook\"", f"source {{{ctx.hook('synthesis', 'pre_compile_hook')}}}"]
     lines += [
+        "puts \"CEDAR_STEP compile\"",
         "set_fix_multiple_port_nets -all -buffer_constants -feedthroughs [all_designs]",
         "check_design -summary",
         syn.get("compile_command") or "compile -map_effort high -area_effort high -no_design_rule -power_effort high",
     ]
     if ctx.hook("synthesis", "post_compile_hook"):
-        lines.append(f"source {{{ctx.hook('synthesis', 'post_compile_hook')}}}")
+        lines += ["puts \"CEDAR_STEP post_compile_hook\"", f"source {{{ctx.hook('synthesis', 'post_compile_hook')}}}"]
     lines += [
+        "puts \"CEDAR_STEP write_outputs\"",
         "ungroup -all -flatten",
         "set unmapped [sizeof_collection [get_cells -hier -filter \"is_unmapped == true\" -quiet]]",
         "if {$unmapped > 0} { puts \"CEDAR_ERROR $unmapped unmapped cells after compile\"; exit 3 }",
@@ -260,11 +465,18 @@ def synthesize(ctx: FlowContext, rtl: Sequence[str], work: Path, timeout: Option
     ]
     (work / "dc.tcl").write_text("\n".join(lines) + "\n")
     r = ctx.tools.run("synthesis", ["-f", str(work / "dc.tcl")], work, work / "dc.log", timeout, label="synthesis")
+    log = _read(Path(r.log)) if r.log else ""
+    errs = tool_errors(log, "synopsys")
+    r.evidence = {"steps": steps_seen(log), "tool_errors": errs[:20],
+                  "completed": bool(re.search(r"^CEDAR_DC_DONE", log, re.M))}
     if r.ok:
-        log = Path(r.log).read_text(errors="replace")
-        errs = re.findall(r"^CEDAR_ERROR.*", log, re.M)
-        if not re.search(r"^CEDAR_DC_DONE", log, re.M) or errs:
-            r.status, r.detail = "failed", (errs or ["DC did not complete"])[0]
+        missing = [n for n in ("netlist.v", "area.rpt", "timing.rpt") if not (res / n).is_file()]
+        if errs:
+            _fail(r, f"DC error in {_first(errs)}")
+        elif not r.evidence["completed"]:
+            _fail(r, f"DC did not complete (last step: {(r.evidence['steps'] or ['none'])[-1]})")
+        elif missing:
+            _fail(r, f"DC did not write {missing}")
     r.outputs = {"netlist": str(res / "netlist.v"), "sdc": str(sdc), "area_rpt": str(res / "area.rpt"),
                  "timing_rpt": str(res / "timing.rpt"), "power_rpt": str(res / "power.rpt"),
                  "cross_probing": str(res / "cross_probing.rpt"), "critical_path": str(res / "critical_path.rpt")}
@@ -305,6 +517,10 @@ def place_route(ctx: FlowContext, netlist: str, sdc: str, work: Path, timeout: O
     (work / "mmmc.tcl").write_text("\n".join(mmmc) + "\n")
     m = pr.get("core_margin", 4.0)
     lines = [
+        "proc cedar_run {step body} {",
+        "    puts \"CEDAR_STEP $step\"",
+        "    if {[catch {uplevel #0 $body} e]} { puts \"CEDAR_ERROR ${step}: $e\"; exit 2 }",
+        "}",
         f"setMultiCpuUsage -localCpu {ctx.tools.threads}",
         f"setLibraryUnit -time 1{ctx.time_unit}",
         f"set init_verilog {{{netlist}}}",
@@ -314,37 +530,36 @@ def place_route(ctx: FlowContext, netlist: str, sdc: str, work: Path, timeout: O
         f"set init_mmmc_file {{{work / 'mmmc.tcl'}}}",
         f"set init_pwr_net {pr.get('power_net', 'VDD')}",
         f"set init_gnd_net {pr.get('ground_net', 'VSS')}",
-        "init_design",
+        "cedar_run init {init_design}",
     ]
     if ctx.hook("place_route", "post_init_hook"):
-        lines.append(f"source {{{ctx.hook('place_route', 'post_init_hook')}}}")
+        lines.append(f"cedar_run post_init_hook {{source {{{ctx.hook('place_route', 'post_init_hook')}}}}}")
     pw, gn = pr.get("power_net", "VDD"), pr.get("ground_net", "VSS")
     lo, hi = (pr.get("power_rail_layer_range") or ["M1", "M3"])[:2]
     lines += [
+        "cedar_run floorplan {",
         "clearGlobalNets",
         f"globalNetConnect {pw} -type pgpin -pin {pw} -inst * -module {{}}",
         f"globalNetConnect {gn} -type pgpin -pin {gn} -inst * -module {{}}",
         f"floorPlan -site {pr['site']} -r 1.0 {pr.get('core_utilization', 0.6)} {m} {m} {m} {m}",
-        f"sroute -connect {{ corePin }} -layerChangeRange {{ {lo} {hi} }} -corePinTarget {{ firstAfterRowEnd }} "
-        f"-allowJogging 1 -nets {{ {pw} {gn} }} -allowLayerChange 1 -blockPin useLef",
-        f"setMaxRouteLayer {pr.get('max_route_layer', 6)}",
-        "place_design",
-        f"setNanoRouteMode -routeTopRoutingLayer {pr.get('route_top_layer', 5)} "
-        f"-routeBottomRoutingLayer {pr.get('route_bottom_layer', 2)} -routeWithViaInPin true",
+        "}",
+        f"cedar_run power_route {{sroute -connect {{ corePin }} -layerChangeRange {{ {lo} {hi} }} "
+        f"-corePinTarget {{ firstAfterRowEnd }} -allowJogging 1 -nets {{ {pw} {gn} }} -allowLayerChange 1 "
+        f"-blockPin useLef}}",
+        f"cedar_run place {{setMaxRouteLayer {pr.get('max_route_layer', 6)}; place_design}}",
+        f"cedar_run route_setup {{setNanoRouteMode -routeTopRoutingLayer {pr.get('route_top_layer', 5)} "
+        f"-routeBottomRoutingLayer {pr.get('route_bottom_layer', 2)} -routeWithViaInPin true}}",
     ]
     if ctx.hook("place_route", "pre_route_hook"):
-        lines.append(f"source {{{ctx.hook('place_route', 'pre_route_hook')}}}")
-    lines.append("routeDesign")
+        lines.append(f"cedar_run pre_route_hook {{source {{{ctx.hook('place_route', 'pre_route_hook')}}}}}")
+    lines.append("cedar_run route {routeDesign}")
     if pr.get("filler_cells"):
-        lines.append(f"addFiller -cell {{{' '.join(pr['filler_cells'])}}} -prefix FILLER_")
+        lines.append(f"cedar_run filler {{addFiller -cell {{{' '.join(pr['filler_cells'])}}} -prefix FILLER_}}")
     lines += [
-        "setExtractRCMode -engine postRoute",
-        "extractRC",
-        "rcOut -spef post_route.spef",
-        "write_sdf post_route.sdf",
-        "saveNetlist post_route.v",
-        "setAnalysisMode -analysisType onChipVariation",
-        "report_timing -max_paths 1 > post_route_timing.rpt",
+        "cedar_run extract {setExtractRCMode -engine postRoute; extractRC}",
+        "cedar_run write_outputs {rcOut -spef post_route.spef; write_sdf post_route.sdf; saveNetlist post_route.v}",
+        "cedar_run timing {setAnalysisMode -analysisType onChipVariation; "
+        "report_timing -max_paths 1 > post_route_timing.rpt}",
         "puts CEDAR_INNOVUS_DONE",
         "exit",
     ]
@@ -354,41 +569,95 @@ def place_route(ctx: FlowContext, netlist: str, sdc: str, work: Path, timeout: O
     outs = {k: str(work / v) for k, v in (("netlist", "post_route.v"), ("spef", "post_route.spef"),
                                           ("sdf", "post_route.sdf"), ("timing_rpt", "post_route_timing.rpt"))}
     r.outputs = outs
+    log = _read(Path(r.log)) if r.log else ""
+    accepted_codes = set(pr.get("accepted_errors") or [])
+    errs = tool_errors(log, "cadence")
+    for e in errs:
+        e["accepted"] = (e["code"] in accepted_codes and e["step"] in PNR_TOLERANT_STEPS)
+    blocking = [e for e in errs if not e["accepted"]]
+    outputs_ok = check_pnr_outputs(outs, ctx.top)
+    r.evidence = {"steps": steps_seen(log), "tool_errors": errs[:20],
+                  "accepted_errors": [e for e in errs if e["accepted"]][:20],
+                  "completed": bool(re.search(r"^CEDAR_INNOVUS_DONE", log, re.M)), "outputs": outputs_ok}
     if r.ok:
-        log = Path(r.log).read_text(errors="replace")
-        missing = [k for k, v in outs.items() if k != "timing_rpt" and not Path(v).is_file()]
-        if not re.search(r"^CEDAR_INNOVUS_DONE", log, re.M) or missing:
-            r.status, r.detail = "failed", f"Innovus did not produce {missing or 'completion marker'}"
+        if blocking:
+            _fail(r, f"Innovus error in {_first(blocking)}")
+        elif not r.evidence["completed"]:
+            _fail(r, f"Innovus did not complete (last step: {(r.evidence['steps'] or ['none'])[-1]})")
+        elif outputs_ok["problems"]:
+            _fail(r, "Innovus outputs invalid: " + "; ".join(outputs_ok["problems"]))
     return r
+
+
+# Innovus steps in which a technology profile may accept specific, documented
+# error IDs (``place_route.accepted_errors``). Errors while reading the design
+# and constraints, extracting, writing outputs or timing are never accepted.
+PNR_TOLERANT_STEPS = frozenset({"floorplan", "power_route", "place", "route_setup", "route", "filler",
+                                "post_init_hook", "pre_route_hook"})
+
+
+def check_pnr_outputs(outs: Dict[str, str], top: str) -> Dict[str, Any]:
+    """Post-route netlist, SPEF and SDF exist and have the expected content."""
+    problems = []
+    spef, sdf, net = (_read(Path(outs[k])) for k in ("spef", "sdf", "netlist"))
+    if not spef.lstrip().startswith("*SPEF") or "*D_NET" not in spef:
+        problems.append("post_route.spef is missing or has no *SPEF header / *D_NET")
+    if "(DELAYFILE" not in sdf or "(CELL" not in sdf:
+        problems.append("post_route.sdf is missing or has no DELAYFILE/CELL entries")
+    if not re.search(r"^\s*module\s+" + re.escape(top) + r"\b", net, re.M):
+        problems.append(f"post_route.v is missing or has no module {top}")
+    if not Path(outs["timing_rpt"]).is_file():
+        problems.append("post_route_timing.rpt is missing")
+    return {"problems": problems, "spef_nets": spef.count("*D_NET"), "sdf_cells": sdf.count("(CELL")}
 
 
 def activity_sim(ctx: FlowContext, netlist: str, sdf: str, testbench: str, tb_top: str, dut: str,
                  work: Path, timeout: Optional[int] = None) -> StageResult:
     """SDF-annotated gate-level simulation -> VCD -> SAIF."""
     work.mkdir(parents=True, exist_ok=True)
-    _clear(work, ["waves.vcd", "waves.saif", "sim.log", "simv_gl", "simv_gl.daidir", "csrc"])
+    _clear(work, ["waves.vcd", "waves.saif", "sim.log", "simv_gl", "simv_gl.daidir", "csrc", "sdfAnnotateInfo",
+                  "vcs_compile.log", "vcs_run.log", "vcd2saif.log"])
     period_ns = ctx.clocks[0]["period_ns_resolved"]
     args = ["-full64", "-sverilog", "-xprop=tmerge", "-override_timescale=1ns/1ps", "-top", tb_top,
             "+neg_tchk", "+sdfverbose", f"-sdf", f"max:{tb_top}.{dut}:{sdf}",
             f"+define+CYCLE_TIME={period_ns}", "+vcs+dumpvars+waves.vcd", "-o", "simv_gl"]
     args += ctx.sim_models() + [netlist, testbench]
+    outputs = {"saif": str(work / "waves.saif"), "vcd": str(work / "waves.vcd"),
+               "compile_log": str(work / "vcs_compile.log"), "sdf_annotate_info": str(work / "sdfAnnotateInfo"),
+               "run_log": str(work / "vcs_run.log"), "sim_log": str(work / "sim.log"),
+               "saif_log": str(work / "vcd2saif.log")}
+
+    def done(res: StageResult, seconds: float, evidence: Dict[str, Any]) -> StageResult:
+        res.stage, res.seconds, res.outputs, res.evidence = "activity", round(seconds, 2), outputs, evidence
+        return res
+
     r = ctx.tools.run("simulation", args, work, work / "vcs_compile.log", timeout, label="activity_compile")
+    ev: Dict[str, Any] = {"sdf_annotation": check_sdf_annotation(work / "vcs_compile.log", work / "sdfAnnotateInfo",
+                                                                 sdf, f"{tb_top}.{dut}")}
     if not r.ok:
-        return r
+        return done(r, r.seconds, ev)
+    if not ev["sdf_annotation"]["ok"]:
+        return done(_fail(r, "SDF annotation failed: " + "; ".join(ev["sdf_annotation"]["problems"])), r.seconds, ev)
     run_script = "./simv_gl -l sim.log"
     r2 = _shell(ctx, work, run_script, work / "vcs_run.log", timeout, "activity_sim", stage_tool="simulation")
+    secs = r.seconds + r2.seconds
+    run_txt = _read(work / "vcs_run.log") + _read(work / "sim.log")
+    run_err = re.search(r"^(Error-\[[^\]]+\].*|Fatal:.*)$", run_txt, re.M)
     if not r2.ok:
-        return r2
+        return done(r2, secs, ev)
+    if run_err:
+        return done(_fail(r2, f"simulation error: {run_err.group(1)[:200]}"), secs, ev)
     if not (work / "waves.vcd").is_file():
-        return StageResult("activity_sim", "failed", r.seconds + r2.seconds, r2.log, detail="no waves.vcd produced")
+        return done(_fail(r2, "no waves.vcd produced"), secs, ev)
     r3 = ctx.tools.run("saif", ["-input", "waves.vcd", "-output", "waves.saif", "-instance", f"{tb_top}/{dut}"],
                        work, work / "vcd2saif.log", timeout, label="vcd2saif")
-    if r3.ok and not (work / "waves.saif").is_file():
-        r3.status, r3.detail = "failed", "vcd2saif produced no waves.saif"
-    r3.seconds = round(r.seconds + r2.seconds + r3.seconds, 2)
-    r3.stage = "activity"
-    r3.outputs = {"saif": str(work / "waves.saif"), "vcd": str(work / "waves.vcd")}
-    return r3
+    saif_txt = _read(work / "waves.saif")
+    ev["saif"] = {"bytes": len(saif_txt), "has_instance": f"(INSTANCE {dut}" in saif_txt or f"INSTANCE {dut}" in saif_txt}
+    if r3.ok and not saif_txt:
+        _fail(r3, "vcd2saif produced no waves.saif")
+    elif r3.ok and re.search(r"^\s*(Error|ERROR)\b.*", _read(work / "vcd2saif.log"), re.M):
+        _fail(r3, "vcd2saif reported an error")
+    return done(r3, secs + r3.seconds, ev)
 
 
 def _shell(ctx: FlowContext, work: Path, cmd: str, log: Path, timeout: Optional[int], label: str,
@@ -413,18 +682,31 @@ def _shell(ctx: FlowContext, work: Path, cmd: str, log: Path, timeout: Optional[
 def power_pt(ctx: FlowContext, netlist: str, spef: str, saif: str, sdc: str, tb_top: str, dut: str,
              work: Path, timeout: Optional[int] = None) -> StageResult:
     work.mkdir(parents=True, exist_ok=True)
-    _clear(work, ["power.rpt", "power_cells.rpt", "switching_activity.rpt", "pt.log"])
+    _clear(work, ["power.rpt", "power_cells.rpt", "switching_activity.rpt", "pt.log", "parasitics_command.log",
+                  "parasitics_annotation.rpt"])
+    para_log = work / "parasitics_command.log"
     lines = [
+        _SNPS_PRELUDE,
+        f"set_app_var parasitics_log_file {{{para_log}}}",
+        "puts \"CEDAR_STEP setup\"",
         f"set dbs {tcl_list(ctx.dbs())}",
         "set_app_var target_library $dbs",
         "set_app_var link_library [concat * $dbs]",
         "set_app_var power_enable_analysis true",
+        "puts \"CEDAR_STEP read_design\"",
         f"read_verilog {{{netlist}}}",
         f"current_design {ctx.top}",
         "if {![link_design]} { puts \"CEDAR_ERROR link failed\"; exit 2 }",
+        "puts \"CEDAR_STEP constraints\"",
         f"read_sdc {{{sdc}}}",
+        "puts \"CEDAR_STEP activity\"",
         f"read_saif {{{saif}}} -strip_path {tb_top}/{dut}",
+        "puts \"CEDAR_STEP parasitics\"",
         f"read_parasitics -format spef {{{spef}}}",
+        # read_parasitics runs in the background; update_timing waits for it.
+        "update_timing",
+        "report_annotated_parasitics -check > parasitics_annotation.rpt",
+        "puts \"CEDAR_STEP power\"",
         "update_power",
         "report_switching_activity > switching_activity.rpt",
         "report_power > power.rpt",
@@ -435,11 +717,25 @@ def power_pt(ctx: FlowContext, netlist: str, spef: str, saif: str, sdc: str, tb_
     (work / "pt.tcl").write_text("\n".join(lines) + "\n")
     r = ctx.tools.run("power", ["-f", str(work / "pt.tcl")], work, work / "pt.log", timeout, label="power")
     r.outputs = {"power_rpt": str(work / "power.rpt"), "activity_rpt": str(work / "switching_activity.rpt"),
-                 "cell_power_rpt": str(work / "power_cells.rpt")}
+                 "cell_power_rpt": str(work / "power_cells.rpt"), "parasitics_log": str(para_log),
+                 "parasitics_annotation_rpt": str(work / "parasitics_annotation.rpt")}
+    log = _read(Path(r.log)) if r.log else ""
+    errs = tool_errors(log, "synopsys")
+    para = parse_parasitics_log(para_log, spef)
+    ann = parse_annotated_parasitics(work / "parasitics_annotation.rpt")
+    r.evidence = {"steps": steps_seen(log), "tool_errors": errs[:20],
+                  "completed": bool(re.search(r"^CEDAR_PT_DONE", log, re.M)),
+                  "parasitics": para, "parasitic_annotation": ann,
+                  "saif_annotated_nets_pct": parse_saif_coverage(Path(r.log)) if r.log else None}
     if r.ok:
-        log = Path(r.log).read_text(errors="replace")
-        if not re.search(r"^CEDAR_PT_DONE", log, re.M) or re.search(r"^CEDAR_ERROR", log, re.M):
-            r.status, r.detail = "failed", "PrimeTime did not complete"
+        if errs:
+            _fail(r, f"PrimeTime error in {_first(errs)}")
+        elif not r.evidence["completed"]:
+            _fail(r, f"PrimeTime did not complete (last step: {(r.evidence['steps'] or ['none'])[-1]})")
+        elif not para["ok"]:
+            _fail(r, "SPEF not loaded: " + "; ".join(para["problems"]))
+        elif not ann["ok"]:
+            _fail(r, "parasitics not annotated: " + "; ".join(ann["problems"]))
     return r
 
 

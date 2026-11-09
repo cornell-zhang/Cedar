@@ -89,8 +89,14 @@ script, required environment-variable names, niceness and a process-group
 timeout, capturing a log; results are `ok | failed | timeout | unavailable`.
 `flow.py` generates DC, Innovus, VCS, vcd2saif, PrimeTime and Conformal scripts
 from the technology profile and the shared SDC, parses reports into typed
-`Metric`s (`cedar.metrics`), and checks completion markers. PrimeTime power is
-accepted only if SAIF annotated at least 90% of nets.
+`Metric`s (`cedar.metrics`). Completion markers are necessary but never
+sufficient: each generated script announces its steps, and a stage is `ok` only
+if the tool reported no error in any step (Innovus: except IDs the technology
+profile accepts for non-critical steps), its outputs exist with the expected
+content, and its annotation evidence holds -- SPEF loaded with annotated nets
+and >= 95% internal-net coverage, SAIF >= 90% of nets, a completed SDF
+annotation of the intended instance. That evidence is kept in
+`StageResult.evidence`. See `docs/configuration.md` ("Measurement gates").
 
 ## Agents
 

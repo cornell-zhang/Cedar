@@ -42,3 +42,8 @@ Rules
    --output-dir <scratch>` runs synthesis, P&R, activity simulation, power and a
    self-equivalence check and records the profile as end-to-end validated.
    `cedar doctor` then reports `validated`; it reports `stale` when tools change.
+   Stages fail on any tool error message, not only on exit status. If P&R fails
+   with `Innovus error in <step>: <ID>`, show the user the message from the log;
+   add the ID to the technology's `place_route.accepted_errors` only if the user
+   confirms it is a known, harmless message of their technology (it is never
+   accepted while reading the design/constraints, extracting or writing outputs).

@@ -18,7 +18,7 @@ import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from ..config import Loaded
 
@@ -34,6 +34,9 @@ class StageResult:
     returncode: Optional[int] = None
     detail: str = ""
     outputs: Dict[str, str] = field(default_factory=dict)
+    # Structured evidence a stage was judged on (tool errors, annotation
+    # coverage, ...), recorded in run.json with the stage result.
+    evidence: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:

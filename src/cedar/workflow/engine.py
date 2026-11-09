@@ -527,8 +527,10 @@ class Run:
         self.log(f"baseline: {ppa.summary()}")
         need = ["area", "delay"] + (["power"] if self.s["measurement"].get("mode", "full-ppa") != "synthesis-only" else [])
         probs = ppa.require(need)
-        if probs:
-            self.s["error"] = "baseline measurement incomplete: " + "; ".join(probs)
+        probs += [f"stage {st.get('stage')} {st.get('status')}: {str(st.get('detail', ''))[:200]}"
+                  for st in md.get("stages", []) if st.get("status") != "ok"]
+        if probs or not md.get("complete"):
+            self.s["error"] = "baseline measurement incomplete: " + ("; ".join(probs) or "measurement not complete")
             return "failed"
         if self.objective.require_timing_met and ppa.timing_met is not True:
             self.s["error"] = (f"infeasible timing goal: baseline misses the declared clock "

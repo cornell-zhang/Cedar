@@ -54,6 +54,8 @@ Removed from the snapshot:
   helper scripts with hard-coded developer paths; not used by the build.
 * `test/circt/sm/` — test inputs that are not redistributable and are not part
   of any lit test or of the `egg-opt` build.
+* `test/reconstruct_opaque_region_capture/` — replaced by the synthetic
+  opaque-region capture regression in Cedar's `tests/test_open_flow.py`.
 
 Edited (no functional change to `egg-opt`):
 

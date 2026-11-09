@@ -46,6 +46,9 @@ EXCLUDES = {
         # Non-redistributable test inputs that were present in the fork but are
         # not part of any lit test and not needed to build egg-opt.
         "test/circt/sm",
+        # Replaced by a small synthetic capture/reconstruction regression in
+        # tests/test_open_flow.py; no design-derived input is needed.
+        "test/reconstruct_opaque_region_capture",
     ],
     "extraction-gym": [
         # 246 MB of upstream benchmark e-graphs; not needed to build
@@ -73,7 +76,6 @@ _HEADER_NORMALIZATION_FILES = [
     "src/LowerInterProcessLLHDSignalsPass.h",
     "src/LowerLoopCarryProcessesPass.cpp",
     "src/LowerLoopCarryProcessesPass.h",
-    "test/reconstruct_opaque_region_capture/Inputs/accumulator_opaque_capture_cfbr.egg",
     "test/reconstruct_synthetic_nodes/Inputs/base.egg",
     "test/reconstruct_synthetic_nodes/Inputs/rom_alias.egg",
 ]

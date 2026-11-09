@@ -3,9 +3,58 @@
 checked by circt-lec + Z3 (no commercial tools)."""
 import json
 from pathlib import Path
+import re
+import subprocess
 
 from cedar.cli import main
+from cedar.egraph import pipeline
 from cedar.verification import check
+
+
+def test_opaque_region_captures_preserve_branch_types(tmp_path, toolchain):
+    """Captured constants must not shift positional reconstruction roots."""
+    source = tmp_path / "opaque_capture.mlir"
+    source.write_text("""module {
+  hw.module @opaque_capture(in %a : i4, out result : i4, out captured : i4) {
+    %flag = hw.constant false
+    %zero = hw.constant 0 : i4
+    %one = hw.constant 1 : i4
+    %region = llhd.combinational -> i4 {
+      cf.br ^bb1(%zero, %flag : i4, i1)
+    ^bb1(%value: i4, %condition: i1):
+      %selected = comb.mux %condition, %value, %zero : i4
+      llhd.yield %selected : i4
+    }
+    %sum = comb.add %a, %one : i4
+    hw.output %sum, %region : i4, i4
+  }
+}
+""")
+    eq = pipeline.eqsat(toolchain, tmp_path / "run", "opaque_capture", [],
+                        "opaque_capture", mlir_in=source, iterations=1)
+    graph = json.loads(Path(eq.egraph_json).read_text())
+    # Only hw.output is a root. Constants consumed solely by the opaque
+    # region must stay verbatim rather than consume extraction lines.
+    assert len(graph["root_eclasses"]) == 1
+    extracted = tmp_path / "extracted.txt"
+    result = subprocess.run(
+        [str(toolchain.tool("extract_result")), eq.egraph_json],
+        cwd=eq.work_dir, env=toolchain.env(), capture_output=True, text=True,
+        check=True, timeout=30,
+    )
+    extracted.write_text(result.stdout)
+    output = tmp_path / "reconstructed.mlir"
+    subprocess.run(
+        [str(toolchain.tool("egg-opt")), eq.mlir, "--reconstruct-from-extraction",
+         "--egg-file=" + eq.egg_program, "--extraction-file=" + str(extracted),
+         "-o", str(output)],
+        cwd=eq.work_dir, env=toolchain.env(), capture_output=True, text=True,
+        check=True, timeout=30,
+    )
+    text = output.read_text()
+    assert "hw.module @opaque_capture" in text
+    assert re.search(r"cf\.br \^bb1\([^\n]+ : i4, i1\)", text)
+    assert "llhd.combinational" in text and "hw.output" in text
 
 
 def test_open_example(tmp_path, toolchain):

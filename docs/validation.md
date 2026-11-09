@@ -256,6 +256,38 @@ run, and a failed candidate stage keeps the candidate out of acceptance, the
 frontier and successful-iteration credit. Disabling any one gate makes these
 tests fail.
 
+## Seventh review: overall run budget and process cleanup
+
+* There was no overall execution budget: presets bounded individual steps,
+  phases ran without a deadline and `cedar run wait --timeout` only stopped
+  polling. Runs now carry a persisted wall-clock budget
+  (`search.run_timeout_s`, preset default quick 3600 s / paper 172800 s,
+  `--run-timeout-s`), checked before and after every phase and enforced inside
+  every subprocess (timeouts are capped by the remaining budget). Expiry is
+  recorded in `run.json`, ends the run as `failed`, survives `continue --retry`,
+  refuses task submissions, never earns successful-iteration credit and marks
+  a report written as the budget ran out as failed with an incomplete contract.
+  End to end, `cedar run start --run-timeout-s 60` on the example design
+  stopped the running tools during the baseline and failed with
+  `run budget of 60 s expired during baseline`.
+* The unattended adapter's exit status was ignored and whatever files existed
+  were submitted. Outputs are now considered only after a zero exit within the
+  time limit; stale outputs are deleted before each attempt; a timeout or
+  nonzero exit is a failed attempt (two fail the run).
+* `_shell` (compiled simulators) and the unattended adapter used
+  `subprocess.run`, which on timeout killed only the immediate process: a
+  backgrounded child survived. All external commands (EDA tools, simulators,
+  the compiler toolchain, toolchain probes, agents) now run through
+  `cedar.proc.run`: own process group, group-wide SIGTERM/SIGKILL with reaping
+  on timeout, and leftover descendants terminated after a normal exit. With the
+  reviewer's command (`bash -c 'sleep 30 & ...; wait'`, 1 s limit) the stage
+  returns `timeout` in 1.5 s and the child is gone.
+* Regressions (`tests/test_budget_and_processes.py`) spawn real children
+  through `_shell`, `ToolEnv.run`, the agent runner and the budget cap, and run
+  the engine with an expired budget across resume, a budget expiring during a
+  measurement subprocess, a report written as the budget expires, and an
+  unattended agent that writes valid files but exits nonzero or hangs.
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.

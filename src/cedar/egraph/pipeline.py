@@ -76,18 +76,20 @@ class ExtractResult:
 
 def _run(tc: Toolchain, step: str, cmd: Sequence[str], cwd: Path, timeout: int,
          stdout: Optional[Path] = None, logs: Optional[List[StepLog]] = None) -> subprocess.CompletedProcess:
+    from .. import proc
     t0 = time.monotonic()
     fh = open(stdout, "w") if stdout else None
     try:
-        p = subprocess.run(list(cmd), cwd=str(cwd), env=tc.env(), timeout=timeout,
-                           stdout=fh if fh else subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    except subprocess.TimeoutExpired:
-        if logs is not None:
-            logs.append(StepLog(step, list(cmd), None, time.monotonic() - t0, "timeout"))
-        raise PipelineError(step, f"timed out after {timeout}s")
+        r = proc.run(list(cmd), cwd=str(cwd), env=tc.env(), timeout=timeout,
+                     stdout=fh if fh else subprocess.PIPE, stderr=subprocess.PIPE)
     finally:
         if fh:
             fh.close()
+    if r.timed_out:
+        if logs is not None:
+            logs.append(StepLog(step, list(cmd), None, time.monotonic() - t0, "timeout"))
+        raise PipelineError(step, "run budget expired" if r.budget_expired else f"timed out after {timeout}s")
+    p = subprocess.CompletedProcess(list(cmd), r.returncode, r.stdout, r.stderr)
     if logs is not None:
         logs.append(StepLog(step, list(cmd), p.returncode, round(time.monotonic() - t0, 3), (p.stderr or "")[-2000:]))
     if p.returncode != 0:

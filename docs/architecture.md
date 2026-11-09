@@ -85,8 +85,12 @@ of the design; edited, missing or unrecorded instance files stop the run.
 ## EDA adapters (`cedar.eda`)
 
 `ToolEnv` runs each named adapter through `bash -c` with the profile's setup
-script, required environment-variable names, niceness and a process-group
-timeout, capturing a log; results are `ok | failed | timeout | unavailable`.
+script, required environment-variable names, niceness and a timeout, capturing
+a log; results are `ok | failed | timeout | unavailable`. All external commands
+(EDA tools, compiled simulators, the compiler toolchain, unattended agents) go
+through `cedar.proc.run`: own process group, timeout capped by the run's
+overall budget, the whole group terminated and reaped on timeout and any
+leftover descendants terminated after a normal exit.
 `flow.py` generates DC, Innovus, VCS, vcd2saif, PrimeTime and Conformal scripts
 from the technology profile and the shared SDC, parses reports into typed
 `Metric`s (`cedar.metrics`). Completion markers are necessary but never

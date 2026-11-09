@@ -20,7 +20,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -94,8 +93,9 @@ class Toolchain:
             if b == "egglog":
                 args = [str(self.bin_dir / b), "--help"]
             try:
-                p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
-                txt = (p.stdout + p.stderr).strip().splitlines()
+                from . import proc
+                p = proc.run(args, timeout=timeout)
+                txt = ((p.stdout or "") + (p.stderr or "")).strip().splitlines()
                 out[b] = (txt[0] if txt else f"exit {p.returncode}")[:120]
             except Exception as exc:  # noqa: BLE001
                 out[b] = f"error: {exc}"

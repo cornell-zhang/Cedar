@@ -137,6 +137,8 @@ measurement:
   approximate_pruning: false
 search:
   preset: quick                        # or paper; individual fields override the preset
+  run_timeout_s: 3600                  # overall wall-clock budget (quick 3600, paper 172800);
+                                       # see "Run budget" in docs/workflow.md
 agent:
   stage_models: {}                     # e.g. {proposal: <model>, selection: <model>}
 ```

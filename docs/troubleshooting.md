@@ -14,6 +14,8 @@
 | `place_route failed: Innovus error in <step>: <ID>` | Fix the cause, or -- only for a documented, harmless technology message in floorplan/power-route/place/route/filler/hook steps -- add the ID to `place_route.accepted_errors`. |
 | `SPEF not loaded` / `parasitics not annotated` | PrimeTime could not read or apply the post-route SPEF (see `power/parasitics_command.log`); power is not measured. |
 | `SDF annotation failed` | VCS did not complete back-annotation of the post-route SDF on `tb_top.dut_instance` (see `activity/vcs_compile.log`, `sdfAnnotateInfo`); check `activity.tb_top`/`dut_instance`. |
+| run `failed`: `run budget of N s expired during <phase>` | The overall budget (`search.run_timeout_s` / `--run-timeout-s`) ran out; running tools were stopped. Start a new run with a larger budget; an expired run cannot be continued. |
+| task feedback `unattended agent timed out` / `exited with status N` | The `--agent-cmd` command failed; its files were not accepted. Check `tasks/<id>.agent.log`. |
 | DC `unmapped cells after compile` | The library lacks cells for a construct (e.g. tri-states, latches); adjust the RTL or `synthesis.dont_use`. |
 | Conformal `incomplete verification items` / unmapped points | Key points could not be mapped (e.g. renamed or re-encoded registers). The candidate is excluded; add site-specific mapping commands via `verification.conformal_extra` or `equivalence.extra_commands` if appropriate. |
 | `verification backend ... unavailable` | Runs stop rather than accept unchecked candidates. Fix the tool or choose another explicit `verification.mode`. |

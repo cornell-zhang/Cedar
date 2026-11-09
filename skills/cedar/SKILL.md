@@ -37,6 +37,9 @@ your shell tool has a short timeout, pass `--run-id <id>` so you know the run di
 (`<work-dir>/<id>`), run the command in the background with output to a log file, then
 call `cedar run wait --run <run>`: it returns when a task is pending (exit 3), the run
 finished (0) or failed (1), or after `--timeout` seconds (exit 4; just call it again).
+`--timeout` only limits the waiting; the run itself is bounded by its budget
+(`search.run_timeout_s`, or `--run-timeout-s` on `cedar run start`). An expired run
+fails and cannot be continued; tell the user and suggest a new run with a larger budget.
 Do not poll with `pgrep -f` (it matches your own shell command). Never start a second
 run because a command was interrupted: resume with `cedar run continue --run <run>`
 (a run directory is locked while it is advancing).

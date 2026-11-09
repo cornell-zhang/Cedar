@@ -29,13 +29,14 @@ import shutil
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime
 from importlib import resources
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from .. import __version__
 from .. import config as cfgmod
+from .. import proc as procmod
 from .. import verification
 from ..egraph import costmodel, pipeline
 from ..eda import flow
@@ -86,7 +87,7 @@ class Run:
     def create(cls, design_path: str, work_dir: str, tools_ref: Optional[str] = None,
                tech_ref: Optional[str] = None, toolchain_prefix: Optional[str] = None,
                preset: Optional[str] = None, run_id: Optional[str] = None,
-               agent: Optional[Dict[str, str]] = None) -> "Run":
+               agent: Optional[Dict[str, str]] = None, run_timeout_s: Optional[int] = None) -> "Run":
         design = cfgmod.load_design(design_path)
         dd = design.data
         tools = cfgmod.load_tool_profile(tools_ref or dd["profiles"]["tools"], design.path.parent)
@@ -97,6 +98,8 @@ class Run:
         search = dict(dd.get("search") or {})
         if preset:
             search["preset"] = preset
+        if run_timeout_s is not None:
+            search["run_timeout_s"] = int(run_timeout_s)
         settings = presets.resolve(search)
         objective = Objective.from_config(dd.get("objective"))
         rid = run_id or datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + dd["name"]
@@ -138,6 +141,9 @@ class Run:
             "constraints_id": cfgmod.constraints_id(design, tech, corner),
             "objective": objective.to_dict(),
             "settings": settings,
+            # Overall execution budget (wall clock from creation, across resumes).
+            "budget": {"seconds": int(settings["run_timeout_s"]), "started_at_epoch": time.time(),
+                       "deadline_epoch": time.time() + int(settings["run_timeout_s"])},
             "measurement": dd.get("measurement") or {"mode": "full-ppa", "approximate_pruning": False},
             "provenance": {
                 "design": design.provenance(), "tools": tools.provenance(), "technology": tech.provenance(),
@@ -234,10 +240,47 @@ class Run:
             raise WorkflowError(f"run {self.dir} is already being advanced by another process; "
                                 "poll `cedar run status` instead")
         try:
+            # Every subprocess started while advancing is capped by the budget.
+            procmod.set_deadline(self._deadline_epoch())
             return self._advance(agent_cmd, agent_label, stop_after)
         finally:
+            procmod.set_deadline(None)
             fcntl.flock(lock, fcntl.LOCK_UN)
             lock.close()
+
+    # ------------------------------------------------------------ budget
+
+    def _deadline_epoch(self) -> Optional[float]:
+        return (self.s.get("budget") or {}).get("deadline_epoch")
+
+    def budget_expired(self) -> bool:
+        d = self._deadline_epoch()
+        return d is not None and time.time() >= d
+
+    def _expire(self, where: str) -> str:
+        """Record that the overall budget ran out; the run can never complete."""
+        b = self.s.get("budget") or {}
+        elapsed = round(time.time() - b.get("started_at_epoch", time.time()), 1)
+        if not self.s.get("expired"):
+            self.s["expired"] = {"during": where, "at": now(), "budget_s": b.get("seconds"), "elapsed_s": elapsed}
+            self.log(f"run budget of {b.get('seconds')} s expired during {where} (elapsed {elapsed} s)")
+        self.s["status"] = "failed"
+        self.s["final_status"] = "failed"
+        self.s["error"] = (f"run budget of {b.get('seconds')} s expired during {self.s['expired']['during']}; "
+                           "running tools were stopped and the run cannot complete "
+                           "(start a new run with a larger search.run_timeout_s / --run-timeout-s)")
+        rp = self.dir / "report.json"
+        if rp.is_file():                       # a report written as the budget ran out is withdrawn
+            rep = json.loads(rp.read_text())
+            rep["budget"] = {"seconds": b.get("seconds"), "expired": True, **self.s["expired"]}
+            c = rep.get("execution_contract") or {}
+            c["status"] = "incomplete"
+            c["problems"] = list(c.get("problems") or []) + ["run budget expired"]
+            rep["execution_contract"] = c
+            rep["final_status"] = "failed"
+            rp.write_text(json.dumps(rep, indent=2, default=str))
+        self.save()
+        return "failed"
 
     def _check_inputs_unchanged(self) -> None:
         """Refuse to resume when the configuration or original RTL changed."""
@@ -331,15 +374,22 @@ class Run:
                  stop_after: Optional[str]) -> str:
         while True:
             phase = self.s["phase"]
+            if self.s.get("expired"):
+                return self._expire(self.s["expired"]["during"])
             if phase == "done":
                 self.s["status"] = self.s.get("final_status", "completed")
                 self.save()
                 return self.s["status"]
+            if self.budget_expired():
+                return self._expire(phase)
             fn = getattr(self, f"phase_{phase}")
             t0 = time.monotonic()
             try:
                 res = fn()
             except Exception as exc:  # noqa: BLE001
+                if self.budget_expired():
+                    self.time_phase(phase, time.monotonic() - t0)
+                    return self._expire(phase)
                 self.s["status"] = "failed"
                 self.s["error"] = f"{phase}: {type(exc).__name__}: {exc}"
                 self.s["traceback"] = traceback.format_exc()[-4000:]
@@ -348,12 +398,34 @@ class Run:
                 self.save()
                 return "failed"
             self.time_phase(phase, time.monotonic() - t0)
+            if self.budget_expired():
+                # Whatever the phase produced under an expired budget (timed-out
+                # stages, partial iterations) is never credited.
+                return self._expire(phase)
             if res == AWAIT:
                 task = self.pending_task()
                 if agent_cmd and task is not None:
                     self.log(f"running unattended agent for task {task.id} ({task.kind})")
+                    for o in task.outputs:          # stale outputs of an earlier attempt never count
+                        Path(o.path).unlink(missing_ok=True)
                     info = run_agent_command(agent_cmd, task, self.dir)
                     self.time_phase(f"agent:{task.kind}", float(info["seconds"]))
+                    if self.budget_expired():
+                        return self._expire(f"agent:{task.kind}")
+                    if info["timed_out"] or info["returncode"] != 0:
+                        why = ("timed out" if info["timed_out"] else f"exited with status {info['returncode']}")
+                        rec = self.s["tasks"][task.id]
+                        rec["attempts"] = int(rec.get("attempts") or 0) + 1
+                        rec["status"] = "pending"
+                        rec["feedback"] = f"unattended agent {why}; its outputs were not accepted (log: {info['log']})"
+                        self.log(f"task {task.id}: {rec['feedback']}")
+                        self.save()
+                        if rec["attempts"] >= 2:
+                            self.s["status"] = "failed"
+                            self.s["error"] = f"agent task {task.id}: unattended agent {why} twice"
+                            self.save()
+                            return "failed"
+                        continue
                     ok, msg = self.submit(task.id, agent_label or {"adapter": agent_cmd.split()[0]})
                     self.log(f"task {task.id}: {'accepted' if ok else 'rejected: ' + msg}")
                     if not ok and self.s["tasks"][task.id]["attempts"] >= 2:
@@ -429,6 +501,9 @@ class Run:
     def submit(self, task_id: str, agent: Optional[Dict[str, str]] = None) -> Tuple[bool, str]:
         if task_id not in self.s["tasks"]:
             raise WorkflowError(f"unknown task {task_id}")
+        if self.s.get("expired") or self.budget_expired():
+            self._expire(self.s.get("expired", {}).get("during") or f"task {task_id}")
+            return False, "run budget expired; the run cannot accept further work"
         t = Task.from_dict(self.s["tasks"][task_id])
         t.attempts += 1
         t.submitted_at = now()
@@ -1313,6 +1388,7 @@ class Run:
             "timings_s": self.s["timings"],
             "agent_tasks": self._task_timing(),
             "wall_clock_s": _seconds_between(self.s["created_at"], now()),
+            "budget": {"seconds": (self.s.get("budget") or {}).get("seconds"), "expired": False},
         }
         (self.dir / "report.json").write_text(json.dumps(report, indent=2, default=str))
         self.s["final_status"] = "completed" if contract["status"] == "met" else "incomplete"

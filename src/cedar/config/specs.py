@@ -195,6 +195,10 @@ DESIGN = {
         "rules_to_propose": F("int", min=0),
         "eqsat_iterations": F("int", min=1, doc="egglog run iterations (omit = saturate)"),
         "eqsat_timeout_s": F("int", min=1),
+        "run_timeout_s": F("int", min=60, unit="s",
+                           doc="overall wall-clock budget of the run from its creation, including agent work and "
+                               "every resume (quick: 3600, paper: 172800). When it expires, running tool "
+                               "processes are terminated and the run ends as failed; it cannot complete."),
         "allow_latency_change": F("bool", default=False, doc="permit pipeline/retiming rewrites (off: no-retiming mode)"),
         "seed_rules": F("bool", default=True, doc="include Cedar's shipped seed rule library in the rule pool"),
     }),

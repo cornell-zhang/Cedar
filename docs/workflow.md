@@ -23,7 +23,26 @@ includes, Tcl hooks, the tool setup script; size+mtime of library/LEF/RC files)
 and resuming refuses if any of them, the design/tool/technology specs, or the
 recomputed constraints id changed. A run directory is locked while a process
 advances it. An optional unattended adapter (`--agent-cmd "claude -p ..."` or
-`"codex exec ..."`) executes tasks in batch mode instead.
+`"codex exec ..."`) executes tasks in batch mode instead; its output files are
+considered only if the command exits 0 within its time limit (stale outputs of
+an earlier attempt are deleted first). A timeout or nonzero exit counts as a
+failed attempt; two failed attempts fail the run.
+
+### Run budget
+
+Every run has an overall wall-clock budget, `search.run_timeout_s` (preset
+default: quick 3600 s, paper 172800 s; `cedar run start --run-timeout-s N`
+overrides it). It is stored in `run.json` at creation and counts from then,
+across every `cedar run continue` and including the agent's work. Every
+subprocess Cedar starts (EDA tools, simulators, the compiler toolchain,
+unattended agents) runs in its own process group with its timeout capped by
+the remaining budget; on a timeout the whole group is terminated and reaped,
+and after a normal exit any leftover descendants are terminated too. When the
+budget expires the run ends as `failed` with `expired` recorded: it cannot be
+continued (not even with `--retry`), task submissions are refused, nothing done
+under the expired budget earns successful-iteration credit, and a report
+written as the budget ran out is marked `failed` with an incomplete contract.
+`cedar run wait --timeout` only bounds the waiting command itself.
 
 ## Phases
 

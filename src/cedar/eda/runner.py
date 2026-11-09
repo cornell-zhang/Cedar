@@ -13,13 +13,13 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import signal
 import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from .. import proc as procmod
 from ..config import Loaded
 
 STAGE_STATUSES = ("ok", "failed", "timeout", "unavailable", "skipped")
@@ -94,14 +94,13 @@ class ToolEnv:
         t = self.tools[stage]
         script = self.prefix(t.get("env_required") or []) + f"\ncommand -v {shlex.quote(t['executable'])}"
         t0 = time.monotonic()
-        try:
-            p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
+        p = procmod.run(["bash", "-c", script], timeout=timeout)
+        if p.timed_out:
             return StageResult(stage, "timeout", time.monotonic() - t0, detail="environment setup timed out")
-        out = (p.stdout.strip().splitlines() or [""])[-1]
+        out = ((p.stdout or "").strip().splitlines() or [""])[-1]
         if p.returncode != 0 or not out:
             return StageResult(stage, "unavailable", time.monotonic() - t0, returncode=p.returncode,
-                               detail=(p.stderr.strip()[-300:] or f"{t['executable']} not found"))
+                               detail=((p.stderr or "").strip()[-300:] or f"{t['executable']} not found"))
         return StageResult(stage, "ok", round(time.monotonic() - t0, 2), detail=out)
 
     def run(self, stage: str, args: Sequence[str], cwd: Path, log: Path, timeout: Optional[int] = None,
@@ -117,25 +116,15 @@ class ToolEnv:
         env = dict(os.environ)
         env.update(env_extra or {})
         env.setdefault("OMP_NUM_THREADS", str(self.threads))
-        t0 = time.monotonic()
         with open(log, "w") as fh:
-            proc = subprocess.Popen(["bash", "-c", script], cwd=str(cwd), stdout=fh, stderr=subprocess.STDOUT,
-                                    stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
-                                    env=env, text=True, start_new_session=True)
-            try:
-                proc.communicate(input=stdin_text, timeout=timeout)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                    time.sleep(3)
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                proc.wait()
-                return StageResult(name, "timeout", round(time.monotonic() - t0, 2), str(log), None,
-                                   f"exceeded {timeout}s")
-        rc = proc.returncode
-        secs = round(time.monotonic() - t0, 2)
+            p = procmod.run(["bash", "-c", script], cwd=str(cwd), env=env, timeout=timeout, stdin_text=stdin_text,
+                            stdout=fh, stderr=subprocess.STDOUT)
+        if p.timed_out:
+            why = "run budget expired" if p.budget_expired else f"exceeded {timeout}s"
+            return StageResult(name, "timeout", p.seconds, str(log), None, why,
+                               evidence={"budget_expired": p.budget_expired})
+        rc = p.returncode
+        secs = p.seconds
         if rc in (97, 98):
             tail = _tail(log, 400)
             return StageResult(name, "unavailable", secs, str(log), rc, tail)

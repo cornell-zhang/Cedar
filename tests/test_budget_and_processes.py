@@ -1,0 +1,281 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Overall run budget and process-group cleanup.
+
+* Every subprocess runs in its own process group; on timeout (stage limit or
+  run budget) the whole group is terminated and reaped -- verified with real
+  spawned children.
+* The run budget is persisted, bounds every subprocess, survives resumes, and
+  an expired run ends as failed: it can never complete, keep a report that
+  claims success, or earn successful-iteration credit.
+* An unattended agent's timeout or nonzero exit is handled before its output
+  files are considered.
+"""
+import functools
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import pytest
+import yaml
+
+from cedar import config as C
+from cedar import proc
+from cedar.eda import flow
+from cedar.eda.runner import ToolEnv
+
+CHILD = "sleep 30 & echo $! > child.pid; wait"
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:                                              # a not-yet-reaped zombie is dead
+        return Path(f"/proc/{pid}/stat").read_text().split()[2] != "Z"
+    except OSError:
+        return False
+
+
+def _gone(pid: int, wait: float = 5.0) -> bool:
+    end = time.monotonic() + wait
+    while time.monotonic() < end:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _child(tmp_path: Path) -> int:
+    for _ in range(100):
+        f = tmp_path / "child.pid"
+        if f.is_file() and f.read_text().strip():
+            return int(f.read_text())
+        time.sleep(0.02)
+    raise AssertionError("child pid not written")
+
+
+@pytest.fixture(autouse=True)
+def _no_deadline():
+    proc.set_deadline(None)
+    yield
+    proc.set_deadline(None)
+
+
+def _ctx(tmp_path: Path) -> flow.FlowContext:
+    for n in ("a.db", "a.lib", "a.v", "rc", "tech.lef", "cells.lef"):
+        (tmp_path / n).write_text("")
+    (tmp_path / "tools.yaml").write_text(yaml.safe_dump({"schema": "cedar/tool-profile@1", "name": "t", "tools": {
+        "simulation": {"adapter": "synopsys-vcs", "executable": "bash"},
+        "synthesis": {"adapter": "synopsys-dc", "executable": "bash"}}}))
+    (tmp_path / "tech.yaml").write_text(yaml.safe_dump({
+        "schema": "cedar/technology@1", "name": "x", "units": {"time": "ps"}, "default_corner": "tt",
+        "corners": {"tt": {"db": ["a.db"], "liberty": ["a.lib"], "sim_models": ["a.v"], "rc_tech": "rc"}},
+        "lef": {"tech": "tech.lef", "cells": ["cells.lef"]}, "place_route": {"site": "core"}}))
+    return flow.FlowContext(ToolEnv(C.load_tool_profile(str(tmp_path / "tools.yaml"))),
+                            C.load_technology(str(tmp_path / "tech.yaml")), "tt", "m",
+                            [{"port": "clk", "period_ns_resolved": 1.0}], 0.1)
+
+
+# ----------------------------------------------------------- process groups
+
+def test_shell_timeout_kills_spawned_child(tmp_path):
+    """The reviewer's reproduction: a backgrounded child must not survive."""
+    r = flow._shell(_ctx(tmp_path), tmp_path, f"bash -c '{CHILD}'", tmp_path / "s.log", 1, "probe", "simulation")
+    assert r.status == "timeout"
+    assert _gone(_child(tmp_path))
+
+
+def test_tool_run_timeout_kills_spawned_child(tmp_path):
+    r = _ctx(tmp_path).tools.run("synthesis", ["-c", CHILD], tmp_path, tmp_path / "t.log", timeout=1)
+    assert r.status == "timeout"
+    assert _gone(_child(tmp_path))
+
+
+def test_normal_exit_leaves_no_descendants(tmp_path):
+    with open(tmp_path / "o.log", "w") as fh:
+        r = proc.run(["bash", "-c", "sleep 30 & echo $! > child.pid; exit 0"], cwd=str(tmp_path), timeout=20,
+                     stdout=fh, stderr=fh)
+    assert r.returncode == 0 and not r.timed_out and r.leftovers_killed
+    assert _gone(_child(tmp_path))
+
+
+def test_run_budget_caps_every_subprocess(tmp_path):
+    proc.set_deadline(time.time() + 1.0)
+    t0 = time.monotonic()
+    with open(tmp_path / "o.log", "w") as fh:
+        r = proc.run(["bash", "-c", CHILD], cwd=str(tmp_path), timeout=600, stdout=fh, stderr=fh)
+    assert r.timed_out and r.budget_expired and time.monotonic() - t0 < 10
+    assert _gone(_child(tmp_path))
+    r2 = proc.run(["true"], timeout=600)                 # nothing starts after expiry
+    assert r2.timed_out and r2.budget_expired and r2.returncode is None
+
+
+def test_unattended_agent_timeout_kills_its_children(tmp_path):
+    from cedar.workflow.tasks import Task, run_agent_command
+    pf = tmp_path / "task.md"
+    pf.write_text("prompt")
+    t = Task(id="t1", kind="direct_rewrite", prompt_file=str(pf), outputs=[])
+    info = run_agent_command(f"bash -c '{CHILD}'", t, tmp_path, timeout=1)
+    assert info["timed_out"] and info["returncode"] is None
+    assert _gone(_child(tmp_path))
+
+
+# ------------------------------------------------------------- run budget
+
+RTL = "module m(input clk, input [3:0] a, b, output reg [3:0] y); always @(posedge clk) y <= a * b + a; endmodule\n"
+VARIANT = "module m(input clk, input [3:0] a, b, output reg [3:0] y); always @(posedge clk) y <= a * (b + 4'd1); endmodule\n"
+
+
+def _fake_measure(self, name, rtl):
+    from cedar.metrics import PPA, Metric
+    ppa = PPA({"area": Metric.measured("area", 90.0 if name != "baseline" else 100.0, "um2", "post-synthesis", "stub"),
+               "delay": Metric.measured("delay", 1.0, "ns", "post-synthesis", "stub"),
+               "slack": Metric.measured("slack", 0.1, "ns", "post-synthesis", "stub"),
+               "power": Metric.measured("power", 80.0, "uW", "post-route", "stub")},
+              True, self.s["constraints_id"], "full-ppa")
+    return {"ppa": ppa.to_dict(), "stages": [], "pruned": False, "complete": True, "info": {}}
+
+
+def _run(tmp_path, toolchain, monkeypatch, measure=_fake_measure, **create):
+    from cedar.workflow import engine as E
+    monkeypatch.setenv("CEDAR_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(E.Run, "_measure", measure)
+    monkeypatch.setattr(E.Run, "_verify", lambda self, n, r: {"status": "passed", "backend": "stub", "detail": "stub",
+                                                               "seconds": 0.0, "evidence": ""})
+    monkeypatch.setattr(E.flow, "synthesize", lambda *a, **k: type("S", (), {"ok": False, "status": "skipped",
+                                                                             "detail": "stub", "outputs": {}})())
+    monkeypatch.setattr(E.flow, "synth_metrics", lambda *a, **k: {})
+    monkeypatch.setattr(E.Run, "phase_attribution", lambda self: "next")
+    monkeypatch.setattr(E.Run, "_attribute", lambda self, name, rec: None)
+    for n in ("a.db", "a.lib", "a.v", "rc", "tech.lef", "cells.lef"):
+        (tmp_path / n).write_text("")
+    (tmp_path / "m.v").write_text(RTL)
+    stages = {"synthesis": "synopsys-dc", "place_route": "cadence-innovus", "simulation": "synopsys-vcs",
+              "saif": "synopsys-vcd2saif", "power": "synopsys-primetime", "equivalence": "cadence-conformal"}
+    (tmp_path / "tools.yaml").write_text(yaml.safe_dump({"schema": "cedar/tool-profile@1", "name": "t", "tools": {
+        k: {"adapter": v, "executable": "true"} for k, v in stages.items()}}))
+    (tmp_path / "tech.yaml").write_text(yaml.safe_dump({
+        "schema": "cedar/technology@1", "name": "x", "units": {"time": "ps"}, "default_corner": "tt",
+        "corners": {"tt": {"db": ["a.db"], "liberty": ["a.lib"], "sim_models": ["a.v"], "rc_tech": "rc"}},
+        "lef": {"tech": "tech.lef", "cells": ["cells.lef"]}, "place_route": {"site": "core"}}))
+    (tmp_path / "design.yaml").write_text(yaml.safe_dump({
+        "schema": "cedar/design@1", "name": "m", "top": "m", "rtl": ["m.v"],
+        "profiles": {"tools": "tools.yaml", "technology": "tech.yaml"},
+        "clocks": [{"port": "clk", "period_ns": 1.0}], "activity": {"mode": "testbench", "testbench": "m.v"},
+        "verification": {"mode": "conformal"}, "objective": {"preset": "balanced"},
+        "search": {"preset": "quick", "rules_to_propose": 0}}))
+    sel = str(toolchain.bin_dir.parent) if toolchain.bin_dir.name == "bin" else None
+    return E.Run.create(str(tmp_path / "design.yaml"), str(tmp_path / "runs"), toolchain_prefix=sel, **create)
+
+
+def _answer(run, text=VARIANT):
+    t = run.pending_task()
+    Path(t.outputs[0].path).write_text(text)
+    Path(t.outputs[-1].path).write_text('{"variants": []}')
+    return run.submit(t.id, {"host": "test"})
+
+
+def test_budget_is_persisted_and_configurable(tmp_path, toolchain, monkeypatch):
+    run = _run(tmp_path, toolchain, monkeypatch, run_timeout_s=120)
+    b = json.loads((run.dir / "run.json").read_text())["budget"]
+    assert b["seconds"] == 120 and abs(b["deadline_epoch"] - b["started_at_epoch"] - 120) < 1
+    assert run.settings["run_timeout_s"] == 120
+    from cedar.workflow import presets
+    assert presets.resolve({"preset": "quick"})["run_timeout_s"] == 3600
+    with pytest.raises(ValueError):
+        presets.resolve({"preset": "quick", "run_timeout_s": 5})
+
+
+def test_expired_budget_stops_across_resume_and_rejects_work(tmp_path, toolchain, monkeypatch):
+    from cedar.workflow import engine as E
+    run = _run(tmp_path, toolchain, monkeypatch)
+    assert run.advance() == "awaiting_agent"
+    run.s["budget"]["deadline_epoch"] = time.time() - 1          # the budget runs out while the agent works
+    run.save()
+    r2 = E.Run(run.dir)
+    ok, msg = _answer(r2)
+    assert not ok and "budget" in msg
+    assert r2.advance() == "failed" and r2.s["expired"] and "budget" in r2.s["error"]
+    r3 = E.Run(run.dir)                                          # `cedar run continue --retry`
+    r3.s["status"] = "running"
+    assert r3.advance() == "failed" and r3.s["status"] == "failed"
+    assert not (run.dir / "report.json").exists()
+    assert not any(it.get("successful") for it in r3.s["iterations"])
+
+
+def test_budget_expiring_during_measurement_gets_no_credit(tmp_path, toolchain, monkeypatch):
+    def measure(self, name, rtl):
+        if name == "iter01":
+            # the budget runs out while a measurement subprocess is running
+            self.s["budget"]["deadline_epoch"] = time.time() + 1.0
+            proc.set_deadline(self.s["budget"]["deadline_epoch"])
+            work = self.dir / "measure" / name
+            work.mkdir(parents=True, exist_ok=True)
+            st = flow._shell(self.ctx, work, f"bash -c '{CHILD}'", work / "sim.log", 600, "activity_sim", "simulation")
+            assert st.status == "timeout" and st.evidence["budget_expired"]
+            assert _gone(_child(work))
+            md = _fake_measure(self, name, rtl)
+            md["stages"], md["complete"] = [st.to_dict()], False
+            return md
+        return _fake_measure(self, name, rtl)
+
+    run = _run(tmp_path, toolchain, monkeypatch, measure)
+    assert run.advance() == "awaiting_agent"
+    assert _answer(run)[0]
+    assert run.advance() == "failed"
+    assert run.s["status"] == "failed" and run.s["expired"]["during"].startswith("iter")
+    assert not any(it.get("successful") for it in run.s["iterations"])
+    assert not (run.dir / "report.json").exists()
+
+
+def test_report_written_as_budget_expires_is_withdrawn(tmp_path, toolchain, monkeypatch):
+    from cedar.workflow import engine as E
+    orig = E.Run.phase_report
+
+    def late_report(self):
+        res = orig(self)
+        self.s["budget"]["deadline_epoch"] = time.time() - 1
+        return res
+
+    monkeypatch.setattr(E.Run, "phase_report", late_report)
+    run = _run(tmp_path, toolchain, monkeypatch)
+    assert run.advance() == "awaiting_agent"
+    assert _answer(run)[0]
+    assert run.advance() == "failed"
+    rep = json.loads((run.dir / "report.json").read_text())
+    assert rep["final_status"] == "failed" and rep["budget"]["expired"] is True
+    assert rep["execution_contract"]["status"] == "incomplete"
+    assert E.Run(run.dir).advance() == "failed"                  # never flips to completed
+
+
+AGENT = r'''
+import json, sys, time
+from pathlib import Path
+s = json.loads(Path("run.json").read_text())
+t = next(v for v in s["tasks"].values() if v["status"] == "pending")
+Path(t["outputs"][0]["path"]).write_text(sys.argv[1].replace("\\n", "\n"))
+Path(t["outputs"][-1]["path"]).write_text('{"variants": []}')
+mode = sys.argv[2]
+if mode == "fail":
+    sys.exit(3)
+if mode == "hang":
+    time.sleep(60)
+'''
+
+
+@pytest.mark.parametrize("mode, why", [("fail", "exited with status 3"), ("hang", "timed out")])
+def test_unattended_agent_failure_is_not_accepted(mode, why, tmp_path, toolchain, monkeypatch):
+    from cedar.workflow import engine as E
+    script = tmp_path / "agent.py"
+    script.write_text(AGENT)
+    monkeypatch.setattr(E, "run_agent_command", functools.partial(E.run_agent_command, timeout=3))
+    run = _run(tmp_path, toolchain, monkeypatch)
+    cmd = f"{sys.executable} {script} {json.dumps(VARIANT.replace(chr(10), chr(92) + 'n'))} {mode}"
+    assert run.advance(agent_cmd=cmd) == "failed"
+    t = next(v for v in run.s["tasks"].values() if v["kind"] == "direct_rewrite")
+    assert t["status"] == "pending" and t["attempts"] == 2 and why in t["feedback"]
+    assert why in run.s["error"]
+    assert "direct_1" not in run.s["candidates"]                 # the written files were never accepted

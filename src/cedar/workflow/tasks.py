@@ -16,7 +16,6 @@ import json
 import re
 import shlex
 import subprocess
-import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from importlib import resources
@@ -109,16 +108,12 @@ def run_agent_command(cmd: str, task: Task, cwd: Path, timeout: int = 1800) -> D
     prompt += ("\n\nYou are running non-interactively: write the required output files directly. "
                "Do not run `cedar task submit`; the caller validates the outputs.\n")
     argv = shlex.split(cmd) + [prompt]
-    t0 = time.monotonic()
+    from .. import proc
     log = Path(task.prompt_file).with_suffix(".agent.log")
     with open(log, "w") as fh:
-        try:
-            p = subprocess.run(argv, cwd=str(cwd), stdout=fh, stderr=subprocess.STDOUT, timeout=timeout,
-                               stdin=subprocess.DEVNULL)
-            rc = p.returncode
-        except subprocess.TimeoutExpired:
-            rc = None
-    return {"returncode": rc, "seconds": round(time.monotonic() - t0, 2), "log": str(log)}
+        p = proc.run(argv, cwd=str(cwd), timeout=timeout, stdout=fh, stderr=subprocess.STDOUT)
+    return {"returncode": p.returncode, "seconds": p.seconds, "log": str(log), "timed_out": p.timed_out,
+            "budget_expired": p.budget_expired, "leftovers_killed": p.leftovers_killed}
 
 
 _MODULE_RE = re.compile(r"\bmodule\s+([A-Za-z_][A-Za-z0-9_$]*)")

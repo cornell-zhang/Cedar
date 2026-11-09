@@ -24,7 +24,7 @@ import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 from ..config import Loaded
 from ..metrics import Metric
@@ -403,7 +403,6 @@ def synthesize(ctx: FlowContext, rtl: Sequence[str], work: Path, timeout: Option
     res.mkdir(exist_ok=True)
     sdc = ctx.write_sdc(work / "constraints.sdc")
     syn = ctx.tech.data.get("synthesis") or {}
-    period = ctx.to_lib_time(ctx.clocks[0]["period_ns_resolved"])
     hdl = detect_hdl(rtl)
     defines = " ".join(f"{k}={v}" if v not in (None, "") else k for k, v in ctx.defines.items())
     lines = [
@@ -619,7 +618,7 @@ def activity_sim(ctx: FlowContext, netlist: str, sdf: str, testbench: str, tb_to
                   "vcs_compile.log", "vcs_run.log", "vcd2saif.log"])
     period_ns = ctx.clocks[0]["period_ns_resolved"]
     args = ["-full64", "-sverilog", "-xprop=tmerge", "-override_timescale=1ns/1ps", "-top", tb_top,
-            "+neg_tchk", "+sdfverbose", f"-sdf", f"max:{tb_top}.{dut}:{sdf}",
+            "+neg_tchk", "+sdfverbose", "-sdf", f"max:{tb_top}.{dut}:{sdf}",
             f"+define+CYCLE_TIME={period_ns}", "+vcs+dumpvars+waves.vcd", "-o", "simv_gl"]
     args += ctx.sim_models() + [netlist, testbench]
     outputs = {"saif": str(work / "waves.saif"), "vcd": str(work / "waves.vcd"),
@@ -662,20 +661,24 @@ def activity_sim(ctx: FlowContext, netlist: str, sdf: str, testbench: str, tb_to
 
 def _shell(ctx: FlowContext, work: Path, cmd: str, log: Path, timeout: Optional[int], label: str,
            stage_tool: str) -> StageResult:
-    """Run a non-tool shell command (e.g. ./simv) inside the profile environment."""
+    """Run a non-tool shell command (e.g. ./simv) inside the profile environment.
+
+    Like every Cedar subprocess it runs in its own process group: on timeout
+    (stage limit or run budget) the whole group is terminated and reaped.
+    """
     import subprocess
-    import time
+
+    from .. import proc
     tool = ctx.tools.tools.get(stage_tool, {})
     script = ctx.tools.prefix(tool.get("env_required") or []) + f"\nexec nice -n {ctx.tools.nice} {cmd}"
-    t0 = time.monotonic()
+    limit = timeout or tool.get("timeout_s") or 1800
     with open(log, "w") as fh:
-        try:
-            p = subprocess.run(["bash", "-c", script], cwd=str(work), stdout=fh, stderr=subprocess.STDOUT,
-                               stdin=subprocess.DEVNULL, timeout=timeout or tool.get("timeout_s") or 1800,
-                               start_new_session=True)
-        except subprocess.TimeoutExpired:
-            return StageResult(label, "timeout", round(time.monotonic() - t0, 2), str(log))
-    return StageResult(label, "ok" if p.returncode == 0 else "failed", round(time.monotonic() - t0, 2), str(log),
+        p = proc.run(["bash", "-c", script], cwd=str(work), timeout=limit, stdout=fh, stderr=subprocess.STDOUT)
+    if p.timed_out:
+        return StageResult(label, "timeout", p.seconds, str(log),
+                           detail="run budget expired" if p.budget_expired else f"exceeded {limit}s",
+                           evidence={"budget_expired": p.budget_expired})
+    return StageResult(label, "ok" if p.returncode == 0 else "failed", p.seconds, str(log),
                        p.returncode, "" if p.returncode == 0 else Path(log).read_text(errors="replace")[-500:])
 
 

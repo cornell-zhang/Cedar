@@ -294,7 +294,8 @@ def cmd_run(a) -> int:
     try:
         if a.run_cmd == "start":
             agent = _agent_label(a)
-            run = Run.create(a.design, a.work_dir, a.profile, a.technology, a.toolchain_prefix, a.preset, a.run_id, agent)
+            run = Run.create(a.design, a.work_dir, a.profile, a.technology, a.toolchain_prefix, a.preset, a.run_id, agent,
+                             run_timeout_s=a.run_timeout_s)
             print(f"created run {run.dir}")
             return _after_advance(run, run.advance(a.agent_cmd, agent or None))
         run = Run(Path(a.run))
@@ -309,6 +310,10 @@ def cmd_run(a) -> int:
             s = run.s
             info = {"run": str(run.dir), "status": s["status"], "phase": s["phase"], "iteration": s["iteration"],
                     "error": s.get("error"), "pending_task": (run.pending_task().id if run.pending_task() else None),
+                    "budget": {"seconds": (s.get("budget") or {}).get("seconds"),
+                               "remaining_s": (round((s.get("budget") or {}).get("deadline_epoch", 0) - time.time())
+                                               if s.get("budget") else None),
+                               "expired": s.get("expired")},
                     "frontier": s.get("frontier_names"), "timings_s": s["timings"],
                     "candidates": {k: {"origin": v["origin"], "verified": v.get("verified"),
                                        "measured": bool(v.get("measurement"))} for k, v in s["candidates"].items()}}
@@ -321,7 +326,11 @@ def cmd_run(a) -> int:
 
 
 def cmd_run_wait(a) -> int:
-    """Block until the run needs the agent, finishes, or fails (or --timeout)."""
+    """Block until the run needs the agent, finishes, or fails (or --timeout).
+
+    ``--timeout`` only bounds this *polling* command; the run's execution is
+    bounded by its own persisted budget (``search.run_timeout_s``).
+    """
     import fcntl
     run_dir = Path(a.run)
     state = run_dir / "run.json"
@@ -543,6 +552,9 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--agent", help="host running the agent (claude|codex), recorded in provenance")
     q.add_argument("--model", help="model identity, recorded in provenance")
     q.add_argument("--agent-cmd", help="unattended adapter command (e.g. 'claude -p'); default: stop for the active agent")
+    q.add_argument("--run-timeout-s", type=int,
+                   help="overall wall-clock budget of the run in seconds (default: search.run_timeout_s / preset); "
+                        "on expiry running tools are stopped and the run fails")
     q.set_defaults(fn=cmd_run)
     for name in ("continue", "status"):
         q = rs.add_parser(name)
@@ -557,7 +569,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     q = rs.add_parser("wait", help="block until the run needs the agent, finishes or fails")
     q.add_argument("--run", required=True)
-    q.add_argument("--timeout", type=int, default=540, help="seconds (default 540)")
+    q.add_argument("--timeout", type=int, default=540, help="seconds to poll (default 540); execution itself is bounded by the run budget")
     q.set_defaults(fn=cmd_run_wait)
 
     sp = sub.add_parser("task", help="agent task contracts")

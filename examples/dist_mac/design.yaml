@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Example Cedar design spec (cedar/design@1) for examples/dist_mac.
 # Profiles are referenced by name (looked up in $CEDAR_CONFIG_HOME) or path;
 # override them with `cedar run start --profile ... --technology ...`.

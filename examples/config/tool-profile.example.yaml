@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Example Cedar tool profile (cedar/tool-profile@1). Copy to
 # ~/.config/cedar/profiles/<name>.yaml (or let the cedar-setup skill write it with
 # `cedar setup write-profile`) and adapt. Keep the real file private.

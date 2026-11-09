@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # Example Cedar technology profile (cedar/technology@1) for a standard-cell
 # library. All paths are placeholders; ${PDK_ROOT} must be set when Cedar
 # loads the profile (or use absolute paths). Keep the real file private.

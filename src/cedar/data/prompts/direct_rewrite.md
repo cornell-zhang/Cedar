@@ -1,4 +1,4 @@
-# Cedar task {task_id}: direct RTL rewrite candidates for `{top}`
+# Cedar task {task_id}: direct RTL rewrite candidates for `{top}` (round {round})
 
 You are the optimization agent in a Cedar run. Produce {n_variants} functionally
 equivalent RTL rewrite(s) of the design below that improve the stated objective.
@@ -10,6 +10,9 @@ equivalent RTL rewrite(s) of the design below that improve the stated objective.
 - {objective}
 - Baseline measurement ({measurement_mode}): {baseline_ppa}
 - E-graph operator histogram of the design: {op_histogram}
+
+## Previous rounds
+{round_context}
 
 ## Constraints
 - Cycle behaviour must be identical: same registers per output path, same reset values,

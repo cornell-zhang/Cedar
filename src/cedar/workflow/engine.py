@@ -443,20 +443,51 @@ class Run:
         self.log(f"analysis e-graph: {eq.n_nodes} nodes, widths {eq.widths}")
         return "next"
 
+    def _direct_round(self) -> int:
+        return int(self.s.get("direct_round", 1))
+
+    def _round_context(self, r: int) -> str:
+        if r == 1:
+            return "This is the first round."
+        lines = []
+        b = self.baseline_ppa()
+        best = None
+        for name, c in self.s["candidates"].items():
+            if c.get("origin") != "direct":
+                continue
+            v = c.get("verification", {}).get("status")
+            ppa = PPA.from_dict(c["measurement"]["ppa"]) if c.get("measurement") else None
+            score = self.objective.score(ppa, b)[0] if ppa else None
+            lines.append(f"- {name} (round {c.get('round')}): verification {v}; "
+                         f"{ppa.summary() if ppa else 'not measured'}; objective score "
+                         f"{'n/a' if score is None else f'{score:.4f}'} (baseline 1.0); change: "
+                         f"{(c.get('note') or {}).get('change', '')}; file {c['rtl'][0]}")
+            if score is not None and c.get("verified") and (best is None or score < best[1]):
+                best = (name, score)
+        if best:
+            lines.append(f"Best so far: {best[0]} (score {best[1]:.4f}). Either push the idea behind it further, "
+                         "or try a structurally different approach that targets the objective; avoid repeating "
+                         "variants that failed verification.")
+        return "\n".join(lines) or "(no candidates from earlier rounds)"
+
     def phase_direct_task(self) -> str:
         n = int(self.settings["direct_variants"])
         if n <= 0:
             return "next"
-        t = self.task_of("direct_rewrite")
+        r = self._direct_round()
+        key = f"round{r}"
+        t = self.task_of("direct_rewrite", key=key)
         if t is None:
             ddir = self.dir / "candidates" / "direct"
             ddir.mkdir(parents=True, exist_ok=True)
-            outs = [TaskOutput(str(ddir / f"direct_{i + 1}.v"), "verilog", required=(i == 0)) for i in range(n)]
-            notes = ddir / "notes.json"
+            stem = "direct" if r == 1 else f"direct_r{r}"
+            outs = [TaskOutput(str(ddir / f"{stem}_{i + 1}.v"), "verilog", required=(i == 0)) for i in range(n)]
+            notes = ddir / ("notes.json" if r == 1 else f"notes_r{r}.json")
             outs.append(TaskOutput(str(notes), "json", required=True))
             bp = self.baseline_ppa()
             prompt = render(
                 "direct_rewrite", task_id=f"t{len(self.s['tasks']) + 1:03d}-direct_rewrite", top=self.s["top"],
+                round=r, round_context=self._round_context(r),
                 n_variants=n, rtl_files=", ".join(self.s["rtl"]), clock_desc=self.clock_desc(),
                 objective=self.objective.describe(), measurement_mode=self.s["measurement"].get("mode", "full-ppa"),
                 baseline_ppa=bp.summary() if bp else "n/a", op_histogram=json.dumps(design_features(self.s["analysis"]["op_histogram"])),
@@ -466,7 +497,7 @@ class Run:
                 verification_mode=self.verification_mode,
                 output_list="\n".join(f"- `{o.path}`" + ("" if o.required else " (optional)") for o in outs[:-1]),
                 notes_path=str(notes), run_dir=str(self.dir))
-            t = self.new_task("direct_rewrite", prompt, outs)
+            t = self.new_task("direct_rewrite", prompt, outs, {"key": key, "round": r})
             self._announce(t)
             return AWAIT
         return "next" if t.status == "accepted" else AWAIT
@@ -480,7 +511,8 @@ class Run:
         return r.to_dict()
 
     def phase_direct_eval(self) -> str:
-        t = self.task_of("direct_rewrite")
+        r = self._direct_round()
+        t = self.task_of("direct_rewrite", key=f"round{r}")
         if t is None:
             return "next"
         notes = {}
@@ -495,7 +527,7 @@ class Run:
                 continue
             name = p.stem
             names.append(name)
-            self.s["candidates"].setdefault(name, {"origin": "direct", "rtl": [str(p)], "task": t.id,
+            self.s["candidates"].setdefault(name, {"origin": "direct", "rtl": [str(p)], "task": t.id, "round": r,
                                                    "note": notes.get(p.name, {}), "sha256": _sha_file(str(p))})
         # Verify (fail-closed) and get fast post-synthesis deltas for rule proposal (A6);
         # full-PPA measurement is deferred to measure_pending (runs in parallel).
@@ -517,7 +549,50 @@ class Run:
                 if v["status"] in ("unavailable", "error"):
                     self.s["error"] = f"verification backend {self.verification_mode} {v['status']}: {v['detail']}"
                     return "failed"
-        return "next"
+        return self._direct_round_decision(r, names)
+
+    def _direct_round_decision(self, r: int, names: List[str]) -> str:
+        """Objective-based convergence of the direct-rewrite rounds (A8).
+
+        With more rounds allowed, this round's verified variants are measured
+        (full PPA) so the next round can build on the best *weighted objective
+        score*; the search stops after ``direct_min_rounds`` once a round does
+        not improve the best score. The last round's measurement is deferred
+        to run in parallel with the extracted candidates.
+        """
+        st = self.settings
+        max_r, min_r = int(st.get("direct_rounds", 1)), int(st.get("direct_min_rounds", 1))
+        rounds = self.s.setdefault("direct_rounds", [])
+        if r >= max_r:
+            rounds.append({"round": r, "variants": names, "decision": "last round"})
+            return "next"
+        self._measure_pending()
+        b = self.baseline_ppa()
+        scores = []
+        for n in names:
+            c = self.s["candidates"][n]
+            if c.get("verified") and c.get("measurement"):
+                ppa = PPA.from_dict(c["measurement"]["ppa"])
+                sc = self.objective.score(ppa, b)[0]
+                if sc is not None and self.objective.feasible(ppa):
+                    scores.append(sc)
+        best_round = min(scores) if scores else None
+        prev = self.s.get("direct_best_score")
+        improved = best_round is not None and (prev is None or best_round < prev)
+        if improved:
+            self.s["direct_best_score"] = best_round
+        rec = {"round": r, "variants": names, "best_score": best_round, "best_so_far": self.s.get("direct_best_score"),
+               "improved": improved}
+        if r >= min_r and not improved:
+            rec["decision"] = "converged (objective did not improve)"
+            rounds.append(rec)
+            self.log(f"direct rewrites converged after round {r}")
+            return "next"
+        rec["decision"] = "continue"
+        rounds.append(rec)
+        self.s["direct_round"] = r + 1
+        self.log(f"direct round {r}: best score {best_round}; starting round {r + 1}")
+        return "direct_task"
 
     def _direct_evidence(self) -> str:
         lines = []

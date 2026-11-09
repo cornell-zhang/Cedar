@@ -25,8 +25,8 @@ timings. An optional unattended adapter (`--agent-cmd "claude -p ..."` or
 | preflight | resolve toolchain; check every stage required by the measurement mode and the verification backend; record the original port list | `missing_capability` stops the run |
 | baseline | measure the original RTL (DC -> Innovus -> SDF gate-level activity -> SAIF -> PrimeTime) | incomplete baseline fails the run; a missed clock is `infeasible_timing_goal` (never relaxed) |
 | analysis | eggify the design without rules: widths, operator histogram, cost-model scales | |
-| direct_task | **agent**: direct RTL rewrites for the stated objective (ports and latency unchanged) | task outputs validated |
-| direct_eval | verify each variant against the original (fail-closed) and get post-synthesis deltas | failed variants excluded |
+| direct_task | **agent**: direct RTL rewrites for the stated objective (ports and latency unchanged); later rounds receive every earlier variant's verification result, measured PPA and objective score | task outputs validated |
+| direct_eval | verify each variant against the original (fail-closed) and get post-synthesis deltas; if more rounds are allowed, measure the round's verified variants and continue until `direct_min_rounds` are done and a round no longer improves the best weighted objective score | failed variants excluded |
 | rules_task | **agent**: egglog rules generalizing the verified rewrites; the prompt contains the original RTL, verified diffs, PPA deltas and verification evidence | |
 | rules_admit | quarantine -> parse -> specialize per design width -> Z3 proof -> certificate | only `PROVED` instances are usable |
 | probe | each certified instance alone on the design: egglog match count and new e-nodes | non-firing rules are not selected |
@@ -44,7 +44,8 @@ correctness evidence.
 
 | Setting | quick (smoke) | paper |
 | --- | --- | --- |
-| direct variants requested | 1 | 3 |
+| direct variants per round | 1 | 3 |
+| direct rounds (min / max) | 1 / 1 | 3 / 5 (objective-based convergence) |
 | rules requested | 1 | 2 |
 | iterations (min / max) | 1 / 1 | 10 / 60 |
 | distinct numerical cost configurations (min) | 1 | 3 |

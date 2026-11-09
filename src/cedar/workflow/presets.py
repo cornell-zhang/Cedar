@@ -19,12 +19,12 @@ from typing import Dict
 PRESETS: Dict[str, Dict] = {
     "quick": {
         "max_iterations": 1, "min_iterations": 1, "min_cost_configs": 1, "min_rule_combos": 1,
-        "stall_window": 1, "direct_variants": 1, "rules_to_propose": 1, "eqsat_iterations": 4,
+        "stall_window": 1, "direct_variants": 1, "direct_rounds": 1, "direct_min_rounds": 1, "rules_to_propose": 1, "eqsat_iterations": 4,
         "eqsat_timeout_s": 120, "agent_selection": False, "agent_stop": False,
     },
     "paper": {
         "max_iterations": 60, "min_iterations": 10, "min_cost_configs": 3, "min_rule_combos": 3,
-        "stall_window": 5, "direct_variants": 3, "rules_to_propose": 2, "eqsat_iterations": None,
+        "stall_window": 5, "direct_variants": 3, "direct_rounds": 5, "direct_min_rounds": 3, "rules_to_propose": 2, "eqsat_iterations": None,
         "eqsat_timeout_s": 600, "agent_selection": True, "agent_stop": True,
     },
 }
@@ -38,6 +38,8 @@ def resolve(search_cfg: Dict) -> Dict:
     for k, v in cfg.items():
         if k != "preset" and v is not None:
             out[k] = v
+    if out["direct_min_rounds"] > out["direct_rounds"]:
+        raise ValueError("search.direct_min_rounds exceeds search.direct_rounds")
     if out["min_iterations"] > out["max_iterations"]:
         raise ValueError("search.min_iterations exceeds search.max_iterations")
     out.setdefault("allow_latency_change", False)

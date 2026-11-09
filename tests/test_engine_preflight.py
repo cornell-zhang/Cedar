@@ -126,3 +126,63 @@ def test_resume_rejects_changed_sdc_or_header(tmp_path, toolchain, monkeypatch, 
     assert ("goal.sdc" if edit == "sdc" else "defs.vh") in str(e.value)
     if edit == "sdc":
         assert "constraints id" in str(e.value)
+
+
+def _admitted_run(tmp_path, toolchain, monkeypatch):
+    monkeypatch.setenv("CEDAR_STATE_HOME", str(tmp_path / "state"))
+    sel = str(toolchain.bin_dir.parent) if toolchain.bin_dir.name == "bin" else None
+    run = Run.create(str(_setup(tmp_path, with_equivalence=True)), str(tmp_path / "runs"), toolchain_prefix=sel)
+    assert run.phase_analysis() == "next"
+    assert run.phase_rules_admit() == "next"          # real Z3 admission of the seed rules
+    assert run.s["rules"]["admitted_instances"]
+    run.save()                                        # the engine saves after every phase
+    return run
+
+
+def test_instances_follow_certified_inventory(tmp_path, toolchain, monkeypatch):
+    from cedar.rules import certify
+    from cedar.workflow.engine import WorkflowError
+    run = _admitted_run(tmp_path, toolchain, monkeypatch)
+    insts = run._checked_instances()
+    assert len(insts) == len(run.s["rules"]["admitted_instances"])
+    for (rule, w, text), e in zip(insts, run.s["rules"]["admitted_instances"]):
+        assert certify.rule_sha(text) == e["certificate"]["instance_sha256"]
+    idir = run.dir / "rules" / "instances"
+    f = idir / "add_commute__w4.egg"
+    orig = f.read_text()
+    # edited: an unproved top-level union appended to a certified instance
+    f.write_text(orig + '\n(union (hw_constant (NamedAttr "value" (IntegerAttr 0 (I4))) (I4)) '
+                 '(hw_constant (NamedAttr "value" (IntegerAttr 1 (I4))) (I4)))\n')
+    with pytest.raises(WorkflowError, match="differs from its certified text"):
+        Run(run.dir)._instances(["add_commute"])
+    with pytest.raises(WorkflowError):
+        Run(run.dir).phase_probe()
+    f.write_text(orig)
+    # added: a file that is not in the admission inventory
+    (idir / "evil__w4.egg").write_text("(rule () () :ruleset rules)")
+    with pytest.raises(WorkflowError, match="unrecorded"):
+        Run(run.dir)._checked_instances()
+    (idir / "evil__w4.egg").unlink()
+    assert Run(run.dir)._instances(["add_commute"])
+
+
+def test_stale_verifier_instances_are_reproved_or_rejected(tmp_path, toolchain, monkeypatch):
+    import json
+
+    from cedar.rules import certify
+    from cedar.workflow.engine import WorkflowError
+    run = _admitted_run(tmp_path, toolchain, monkeypatch)
+    for e in run.s["rules"]["admitted_instances"]:
+        e["certificate"]["verifier"] = "0ld-verifier"
+    run.save()
+    r2 = Run(run.dir)
+    texts = r2._instances(["mul_factor_common"])            # re-proved from the recorded source
+    assert texts and all(e["certificate"]["verifier"] == certify.verifier_hash()
+                         for e in r2.s["rules"]["admitted_instances"] if e["rule"] == "mul_factor_common")
+    s = json.loads((run.dir / "run.json").read_text())
+    for e in s["rules"]["admitted_instances"]:
+        e["certificate"]["verifier"] = "0ld-verifier"
+    s["rules"]["sources"] = {}
+    (run.dir / "run.json").write_text(json.dumps(s))
+    with pytest.raises(WorkflowError, match="older verifier"):
+        Run(run.dir)._instances(["add_commute"])

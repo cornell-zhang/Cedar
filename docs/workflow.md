@@ -65,7 +65,10 @@ correctness evidence.
 bounds the search. An iteration counts as *successful* (for budgets, diversity,
 stagnation and the contract) only if its candidate passed verification **and**
 was completely and comparably measured (all stages ok, every required metric
-valid, same constraints/measurement mode/stages as the baseline). A run whose
+valid, same constraints/measurement mode/stages as the baseline). The same
+predicate gates frontier insertion and all search feedback (direct-round
+convergence, agent prompts): a candidate whose RTL changed after verification
+or whose measurement is incomplete never appears on the published frontier. A run whose
 iterations all failed measurement ends `incomplete`, with per-iteration reasons
 in `report.json` (`iteration_outcomes`). Every EDA stage deletes the outputs of
 earlier attempts before it runs, and an equivalence result is `passed` only if

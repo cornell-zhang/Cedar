@@ -182,3 +182,70 @@ def test_injection_has_no_effect_in_real_egglog(tmp_path, toolchain):
     adm = C.admit({"add_commute": injected}, [8], None, sigs)
     assert not adm.admitted
     assert egglog_check([i.text for i in adm.admitted], "admitted") != 0
+
+
+# --- review regressions: distinct egglog symbols must stay distinct in the proof ---
+
+def _c8(n):
+    return f'(hw_constant (NamedAttr "value" (IntegerAttr {n} (I8))) (I8))'
+
+
+_NAME_CASES = {
+    # rule text, a concrete LHS term, the RHS the (false) rule would equate it to
+    "rewrite_uses_lhs": (f"(rewrite (comb_add ?lhs (vec-of {_c8(1)}) (I8)) ?lhs :ruleset rules)",
+                         f"(comb_add {_c8(2)} (vec-of {_c8(1)}) (I8))", _c8(2)),
+    "bare_let_vs_pattern_var": ("(rule ((= ?lhs (comb_add ?a ?ops (I8))) (= 1 (vec-length ?ops)) (= ?b (vec-get ?ops 0))) "
+                                "((let a ?b) (union ?lhs (comb_add a (vec-of ?b) (I8)))) :ruleset rules)",
+                                f"(comb_add {_c8(1)} (vec-of {_c8(2)}) (I8))",
+                                f"(comb_add {_c8(2)} (vec-of {_c8(2)}) (I8))"),
+    "question_marks": ("(rule ((= ?lhs (comb_add ?a ?ops (I8))) (= 1 (vec-length ?ops)) (= ??a (vec-get ?ops 0))) "
+                       "((union ?lhs (comb_add ?a (vec-of ?a) (I8)))) :ruleset rules)",
+                       f"(comb_add {_c8(1)} (vec-of {_c8(2)}) (I8))",
+                       f"(comb_add {_c8(1)} (vec-of {_c8(1)}) (I8))"),
+}
+
+
+def _egglog_holds(toolchain, tmp_path, rule_texts, lhs, rhs, name):
+    import shutil
+    import subprocess
+
+    from cedar.egraph import pipeline
+    d = tmp_path / name
+    d.mkdir()
+    shutil.copy(toolchain.template("base.egg"), d / "base.egg")
+    prog = (pipeline.build_program(toolchain, [], 1) + "\n" + "\n".join(rule_texts)
+            + f"\n(let sample {lhs})\n(run rules 2)\n(check (= {lhs} {rhs}))\n")
+    (d / "p.egg").write_text(prog)
+    return subprocess.run([toolchain.tool("egglog"), "p.egg"], cwd=d, capture_output=True, text=True,
+                          timeout=120).returncode == 0
+
+
+@pytest.mark.parametrize("case", sorted(_NAME_CASES))
+def test_symbol_collisions_cannot_admit_false_rules(case, tmp_path, toolchain, template_sigs):
+    rule, lhs, rhs = _NAME_CASES[case]
+    c, inst = C.prove_instance(case, rule, 8, template_sigs)
+    assert c.status != "PROVED", (case, c.detail)
+    adm = C.admit({case: rule}, [8], None, template_sigs)
+    assert not adm.admitted
+    # control: executing the raw rule really equates lhs and rhs (it is false) ...
+    assert _egglog_holds(toolchain, tmp_path, [rule], lhs, rhs, "control")
+    # ... while nothing admitted makes it hold
+    assert not _egglog_holds(toolchain, tmp_path, [i.text for i in adm.admitted], lhs, rhs, "admitted")
+
+
+def test_renamed_correct_rule_still_proves_and_runs(tmp_path, toolchain, template_sigs):
+    # x + 0 -> x written with the awkward names (?lhs in a rewrite, ??-variables, let names
+    # equal to pattern-variable spellings): true, so it must still be proved and work in egglog.
+    good = {
+        "rw": f"(rewrite (comb_add ?lhs (vec-of {_c8(0)}) (I8)) ?lhs :ruleset rules)",
+        "lets": ("(rule ((= ?lhs (comb_add ?a ?ops (I8))) (= 1 (vec-length ?ops)) (= ??a (vec-get ?ops 0))) "
+                 "((let a ??a) (union ?lhs (comb_add a (vec-of ?a) (I8)))) :ruleset rules)"),
+    }
+    for name, rule in good.items():
+        c, inst = C.prove_instance(name, rule, 8, template_sigs)
+        assert c.status == "PROVED", (name, c.detail)
+        assert "?cv" in inst and "??" not in inst
+    adm = C.admit({"rw": good["rw"]}, [8], None, template_sigs)
+    x = _c8(5)
+    assert _egglog_holds(toolchain, tmp_path, [i.text for i in adm.admitted],
+                         f"(comb_add {x} (vec-of {_c8(0)}) (I8))", x, "good")

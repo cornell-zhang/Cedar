@@ -194,3 +194,105 @@ def test_power_timeout_cannot_make_quick_run_succeed(tmp_path, toolchain, monkey
     assert any("timeout" in p for p in out["problems"])
     assert run.s["iterations"][0]["successful"] is False
     assert run.s["status"] == "incomplete"
+    assert "iter01" not in [p["name"] for p in rep["frontier"]["points"]]
+
+
+def _stub_run(tmp_path, toolchain, monkeypatch, search, measure, objective=None):
+    monkeypatch.setenv("CEDAR_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(E.Run, "_measure", measure)
+    monkeypatch.setattr(E.Run, "_verify", _fake_verify)
+    monkeypatch.setattr(E.flow, "synthesize", lambda *a, **k: _NoSynth())
+    monkeypatch.setattr(E.flow, "synth_metrics", lambda *a, **k: {})
+    monkeypatch.setattr(E.Run, "phase_attribution", lambda self: "next")
+    monkeypatch.setattr(E.Run, "_attribute", lambda self, name, rec: None)
+    for n in ("a.db", "a.lib", "a.v", "rc", "tech.lef", "cells.lef"):
+        (tmp_path / n).write_text("")
+    (tmp_path / "m.v").write_text(RTL)
+    stages = {"synthesis": "synopsys-dc", "place_route": "cadence-innovus", "simulation": "synopsys-vcs",
+              "saif": "synopsys-vcd2saif", "power": "synopsys-primetime", "equivalence": "cadence-conformal"}
+    (tmp_path / "tools.yaml").write_text(yaml.safe_dump({"schema": "cedar/tool-profile@1", "name": "t", "tools": {
+        k: {"adapter": v, "executable": "true"} for k, v in stages.items()}}))
+    (tmp_path / "tech.yaml").write_text(yaml.safe_dump({
+        "schema": "cedar/technology@1", "name": "x", "units": {"time": "ps"}, "default_corner": "tt",
+        "corners": {"tt": {"db": ["a.db"], "liberty": ["a.lib"], "sim_models": ["a.v"], "rc_tech": "rc"}},
+        "lef": {"tech": "tech.lef", "cells": ["cells.lef"]}, "place_route": {"site": "core"}}))
+    (tmp_path / "design.yaml").write_text(yaml.safe_dump({
+        "schema": "cedar/design@1", "name": "m", "top": "m", "rtl": ["m.v"],
+        "profiles": {"tools": "tools.yaml", "technology": "tech.yaml"},
+        "clocks": [{"port": "clk", "period_ns": 1.0}], "activity": {"mode": "testbench", "testbench": "m.v"},
+        "verification": {"mode": "conformal"}, "objective": objective or {"preset": "balanced"},
+        "search": search}))
+    sel = str(toolchain.bin_dir.parent) if toolchain.bin_dir.name == "bin" else None
+    return E.Run.create(str(tmp_path / "design.yaml"), str(tmp_path / "runs"), toolchain_prefix=sel)
+
+
+def _answer_direct(run):
+    t = run.pending_task()
+    assert t.kind == "direct_rewrite"
+    Path(t.outputs[0].path).write_text(VARIANT)
+    Path(t.outputs[-1].path).write_text('{"variants": []}')
+    assert run.submit(t.id, {"host": "test"})[0]
+    return t
+
+
+def _incomplete(md):
+    md["ppa"]["metrics"]["power"] = Metric.unavailable("power", "post-route", "primetime", "failed",
+                                                       "power stage timed out").__dict__
+    md["stages"] = [{"stage": "power", "status": "timeout", "seconds": 900.0}]
+    md["complete"] = False
+    return md
+
+
+def test_frontier_excludes_changed_rtl_and_incomplete_measurements(tmp_path, toolchain, monkeypatch):
+    import json
+
+    FAKE.update({"iter01": (60.0, 1.0, 70.0), "direct_1": (90.0, 1.0, 80.0)})
+
+    def measure(self, name, rtl):
+        md = _fake_measure(self, name, rtl)
+        return _incomplete(md) if name == "direct_1" else md
+
+    run = _stub_run(tmp_path, toolchain, monkeypatch, {"preset": "quick", "rules_to_propose": 0}, measure)
+    assert run.advance() == "awaiting_agent"
+    _answer_direct(run)
+    assert run.advance() == "completed"
+    rep = json.loads((run.dir / "report.json").read_text())
+    names = [p["name"] for p in rep["frontier"]["points"]]
+    assert "direct_1" not in names                       # incomplete measurement
+    assert "iter01" in names
+    # now the measured extracted candidate's RTL changes after verification
+    Path(run.s["candidates"]["iter01"]["rtl"][0]).write_text("module m; endmodule\n")
+    r2 = E.Run(run.dir)
+    assert "iter01" not in r2._frontier().names()
+    assert any(n == "iter01" and "RTL changed" in why for n, why in r2._frontier().rejected)
+    r2.phase_report()
+    rep = json.loads((run.dir / "report.json").read_text())
+    assert [p["name"] for p in rep["frontier"]["points"]] == ["baseline"]
+    assert "iter01" in rep["excluded_candidates"] and rep["execution_contract"]["status"] == "incomplete"
+    assert "iter01" not in r2._frontier_text()
+
+
+def test_invalid_candidates_do_not_drive_direct_convergence(tmp_path, toolchain, monkeypatch):
+    """Round 1's variant has the best power but an incomplete measurement: it
+    must not become 'best so far' nor count as an improvement."""
+    FAKE.update({"direct_1": (50.0, 1.0, 10.0), "direct_r2_1": (90.0, 1.0, 80.0)})
+
+    def measure(self, name, rtl):
+        md = _fake_measure(self, name, rtl)
+        return _incomplete(md) if name == "direct_1" else md
+
+    run = _stub_run(tmp_path, toolchain, monkeypatch,
+                    {"preset": "paper", "direct_variants": 1, "direct_rounds": 3, "direct_min_rounds": 2,
+                     "rules_to_propose": 0}, measure, objective={"weights": {"power": 1.0}})
+    assert run.advance() == "awaiting_agent"
+    _answer_direct(run)
+    assert run.advance() == "awaiting_agent"
+    t2 = run.pending_task()
+    assert t2.meta["round"] == 2
+    assert "Best so far" not in Path(t2.prompt_file).read_text()
+    r1 = run.s["direct_rounds"][0]
+    assert r1["best_score"] is None and r1["improved"] is False
+    _answer_direct(run)
+    run.advance()
+    r2 = run.s["direct_rounds"][1]
+    assert r2["improved"] is True                       # the first *valid* improvement

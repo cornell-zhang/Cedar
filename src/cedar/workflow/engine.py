@@ -573,7 +573,7 @@ class Run:
                          f"{ppa.summary() if ppa else 'not measured'}; objective score "
                          f"{'n/a' if score is None else f'{score:.4f}'} (baseline 1.0); change: "
                          f"{(c.get('note') or {}).get('change', '')}; file {c['rtl'][0]}")
-            if score is not None and c.get("verified") and (best is None or score < best[1]):
+            if score is not None and not self._candidate_problems(c) and (best is None or score < best[1]):
                 best = (name, score)
         if best:
             lines.append(f"Best so far: {best[0]} (score {best[1]:.4f}). Either push the idea behind it further, "
@@ -682,7 +682,7 @@ class Run:
         scores = []
         for n in names:
             c = self.s["candidates"][n]
-            if c.get("verified") and c.get("measurement"):
+            if not self._candidate_problems(c):
                 ppa = PPA.from_dict(c["measurement"]["ppa"])
                 sc = self.objective.score(ppa, b)[0]
                 if sc is not None and self.objective.feasible(ppa):
@@ -782,7 +782,10 @@ class Run:
             "generated": generated,
             "admission": adm.summary(),
             "admitted_instances": [{"rule": i.rule_name, "width": i.width, "rule_sha256": i.rule_sha256,
+                                    "file": f"{i.rule_name}__w{i.width}.egg",
                                     "certificate": i.certificate.__dict__} for i in adm.admitted],
+            # rule sources, kept so a stale certificate can be re-proved from source
+            "sources": {n: rules[n] for n in sorted({i.rule_name for i in adm.admitted})},
             "rejected": [c.__dict__ for c in adm.rejected],
             "seconds": round(time.monotonic() - t0, 2),
         }
@@ -795,12 +798,62 @@ class Run:
                  f"agent rules admitted: {gen_ok or 'none'}")
         return "next"
 
-    def _instances(self, rules: List[str]) -> List[str]:
+    def _checked_instances(self, rules: Optional[List[str]] = None) -> List[Tuple[str, int, str]]:
+        """Rule instances that may be sent to egglog, as (rule, width, text).
+
+        Only entries of the recorded admission inventory are used, and each one
+        must (a) still hash to the certified instance text, (b) carry a PROVED
+        certificate from the *current* verifier (otherwise it is re-proved from
+        its recorded source), and (c) apply to a width of this design. Edited,
+        added or unprovable instance files stop the run; disk contents are never
+        used unchecked.
+        """
+        inv = self.s.get("rules", {}).get("admitted_instances", [])
         idir = self.dir / "rules" / "instances"
-        out = []
-        for r in rules:
-            out += [p.read_text() for p in sorted(idir.glob(f"{r}__w*.egg"))]
+        expected = {e.get("file") or f"{e['rule']}__w{e['width']}.egg" for e in inv}
+        extra = sorted(p.name for p in idir.glob("*") if p.name not in expected) if idir.is_dir() else []
+        if extra:
+            raise WorkflowError(f"unrecorded rule instance file(s) {extra} in {idir}; refusing to apply them")
+        widths = set(self.s["analysis"]["widths"])
+        current = certify.verifier_hash()
+        sigs = None
+        out: List[Tuple[str, int, str]] = []
+        changed = False
+        for e in inv:
+            if rules is not None and e["rule"] not in rules:
+                continue
+            fname = e.get("file") or f"{e['rule']}__w{e['width']}.egg"
+            cert = e["certificate"]
+            if cert.get("status") != "PROVED" or cert.get("width") != e["width"] or e["width"] not in widths:
+                raise WorkflowError(f"rule instance {fname}: no PROVED certificate for a width of this design")
+            if cert.get("verifier") != current:
+                src = (self.s["rules"].get("sources") or {}).get(e["rule"])
+                if src is None or certify.rule_sha(src) != e["rule_sha256"]:
+                    raise WorkflowError(f"rule instance {fname}: certificate from an older verifier and no "
+                                        "matching rule source to re-prove it; start a new run")
+                if sigs is None:
+                    sigs = certify.signatures_from_template(self.tc.template("circt.egg").read_text())
+                c, inst = certify.prove_instance(e["rule"], src, e["width"], sigs)
+                if not c.admitted or inst is None:
+                    raise WorkflowError(f"rule instance {fname}: re-certification with the current verifier "
+                                        f"gave {c.status}: {c.detail}")
+                self.log(f"re-certified {fname} with the current verifier")
+                e["certificate"] = c.__dict__
+                (idir / fname).write_text(inst)
+                cert = e["certificate"]
+                changed = True
+            path = idir / fname
+            text = path.read_text() if path.is_file() else ""
+            if certify.rule_sha(text) != cert.get("instance_sha256"):
+                raise WorkflowError(f"rule instance {fname} differs from its certified text "
+                                    "(edited or missing); refusing to apply it")
+            out.append((e["rule"], e["width"], text))
+        if changed:
+            self.save()
         return out
+
+    def _instances(self, rules: List[str]) -> List[str]:
+        return [t for _, _, t in self._checked_instances(rules)]
 
     def phase_probe(self) -> str:
         """Applicability / new-e-node check: each certified instance alone (A7).
@@ -809,14 +862,14 @@ class Run:
         probed in its own short saturation run to get exact match counts.
         """
         base_nodes = self.s["analysis"]["n_nodes"]
-        idir = self.dir / "rules" / "instances"
         probes: Dict[str, dict] = {}
-        for inst in sorted(idir.glob("*__w*.egg")):
-            rule, _, w = inst.stem.rpartition("__w")
+        for rule, width, text in sorted(self._checked_instances(), key=lambda x: (x[0], x[1])):
+            w = str(width)
+            stem = f"{rule}__w{width}"
             p = probes.setdefault(rule, {"matches": 0, "new_nodes": 0, "per_width": {},
-                                         "op_kinds": list(lhs_op_kinds(inst.read_text()))})
+                                         "op_kinds": list(lhs_op_kinds(text))})
             try:
-                eq = self._eqsat(f"probe-{inst.stem}", [inst.read_text()], 2)
+                eq = self._eqsat(f"probe-{stem}", [text], 2)
                 m, nn = sum(eq.rule_matches), eq.n_nodes - base_nodes
             except pipeline.PipelineError as exc:
                 m, nn = 0, 0
@@ -848,8 +901,13 @@ class Run:
         axes = ("area", "delay") if mode == "synthesis-only" else ("area", "delay", "power")
         fr = Frontier(axes, self.baseline_ppa(), self.objective.require_timing_met)
         for name, c in self.s["candidates"].items():
-            if c.get("measurement") and not c["measurement"].get("pruned"):
-                fr.add(Point(name, PPA.from_dict(c["measurement"]["ppa"]), c["origin"], bool(c.get("verified"))))
+            # Same validity gate as the contract and the report: verified,
+            # unchanged RTL, all stages ok, complete and comparable metrics.
+            problems = self._candidate_problems(c)
+            if problems:
+                fr.rejected.append((name, "; ".join(problems)))
+                continue
+            fr.add(Point(name, PPA.from_dict(c["measurement"]["ppa"]), c["origin"], True))
         return fr
 
     def phase_iterate(self) -> str:
@@ -1178,6 +1236,7 @@ class Run:
 
     def _recent_text(self) -> str:
         return "; ".join(f"iter{x['iteration']}: rules={x.get('rules')} verified={x.get('verified')} "
+                         f"successful={self._iter_ok(x)} "
                          f"ppa={x.get('ppa', 'n/a')}" for x in self.s["iterations"][-5:]) or "(none)"
 
     def _contract(self) -> dict:

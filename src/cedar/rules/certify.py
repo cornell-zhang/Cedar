@@ -60,6 +60,7 @@ _FUNC_RE = re.compile(r"\(function\s+(\S+)\s+\(([^()]*)\)\s+\S+\)")
 def verifier_hash() -> str:
     h = hashlib.sha256(VERIFIER_SOURCE.read_bytes())
     h.update(Path(__file__).read_bytes())
+    h.update(CERT_SEMANTICS.encode())
     h.update(z3.get_version_string().encode())
     return h.hexdigest()[:16]
 
@@ -225,6 +226,77 @@ def validate_rule_text(rule_text: str) -> Tuple[Optional[list], str]:
     return form, ""
 
 
+# Bumped whenever admission semantics change; part of every certificate's
+# verifier identity (together with the source hashes of this module and z3verify).
+CERT_SEMANTICS = "alpha-renamed-v2"
+_PAT_PREFIX = "?cv"          # pattern variables  -> ?cv1, ?cv2, ...
+_LET_PREFIX = "cedar_let_"   # let-bound names    -> cedar_let_1, ...
+
+
+def alpha_rename(form: list) -> Tuple[Optional[list], str]:
+    """Rename every pattern variable and let-bound name to a fresh,
+    collision-free identifier (alpha-equivalent rule).
+
+    The proof model normalizes names (it desugars rewrites with an internal
+    ``?lhs``, turns bare let names into ``?name`` and strips ``?`` for Z3
+    symbols). Renaming first guarantees that distinct egglog symbols stay
+    distinct in the model, and the *renamed* text is both what is proved and
+    what egglog executes.
+    """
+    pats: Dict[str, str] = {}
+
+    def pat(sym: str) -> str:
+        if sym not in pats:
+            pats[sym] = f"{_PAT_PREFIX}{len(pats) + 1}"
+        return pats[sym]
+
+    def rn(e, lets: Dict[str, str], head_pos: bool = False):
+        if isinstance(e, str):
+            if head_pos:
+                return e
+            if e.startswith("?"):
+                return pat(e)
+            return lets.get(e, e)
+        if isinstance(e, list):
+            return [rn(c, lets, i == 0) for i, c in enumerate(e)]
+        return e
+
+    if form[0] == "rewrite":
+        return ["rewrite", rn(form[1], {}), rn(form[2], {})] + list(form[3:]), ""
+    premises = [["=", rn(p[1], {}), rn(p[2], {})] for p in form[1]]
+    lets: Dict[str, str] = {}
+    actions = []
+    for a in form[2]:
+        if a[0] == "let":
+            name = a[1]
+            if name.startswith("?"):
+                return None, f"let name {name!r} looks like a pattern variable"
+            if name in lets:
+                return None, f"let name {name!r} is bound twice"
+            expr = rn(a[2], lets)                     # no self-reference
+            lets[name] = f"{_LET_PREFIX}{len(lets) + 1}"
+            actions.append(["let", lets[name], expr])
+        else:
+            actions.append(["union", rn(a[1], lets), rn(a[2], lets)])
+    clash = set(lets) & {h for h in _heads(form)}
+    if clash:
+        return None, f"let name(s) {sorted(clash)} shadow constructor names"
+    return ["rule", premises, actions] + list(form[3:]), ""
+
+
+def _heads(e) -> set:
+    out: set = set()
+
+    def rec(x):
+        if isinstance(x, list) and x:
+            if isinstance(x[0], str):
+                out.add(x[0])
+            for c in x[1:]:
+                rec(c)
+    rec(e)
+    return out
+
+
 def _type_sexp(width: int) -> list:
     return [f"I{width}"] if width in (1, 4, 8, 16, 32, 64) else ["Int", width]
 
@@ -244,6 +316,9 @@ def specialize(rule_text: str, width: int, sigs: Dict[str, List[str]]) -> Tuple[
     anything outside the single validated rule can never reach egglog.
     """
     form, err = validate_rule_text(rule_text)
+    if form is None:
+        return None, f"rejected: {err}"
+    form, err = alpha_rename(form)
     if form is None:
         return None, f"rejected: {err}"
     canonical = zv.sexp_to_str(form)
@@ -353,6 +428,8 @@ def prove_instance(rule_name: str, rule_text: str, width: int, sigs: Dict[str, L
     _form, err = validate_rule_text(rule_text)
     if _form is None:
         return cert("REJECTED", err)
+    if alpha_rename(_form)[0] is None:
+        return cert("REJECTED", alpha_rename(_form)[1])
     inst, why = specialize(rule_text, width, sigs)
     if inst is None:
         return cert("UNSUPPORTED", why)
@@ -531,7 +608,12 @@ def admit(rules: Dict[str, str], widths: Iterable[int], store: Optional[Certific
             c, _ = prove_instance(name, text, min(widths, default=1), sigs, timeout_ms, max_width)
             adm.rejected.append(c)
             continue
-        tvars, concrete = type_variables(zv.sexp_to_str(form), sigs)
+        renamed, _err = alpha_rename(form)
+        if renamed is None:
+            c, _ = prove_instance(name, text, min(widths, default=1), sigs, timeout_ms, max_width)
+            adm.rejected.append(c)
+            continue
+        tvars, concrete = type_variables(zv.sexp_to_str(renamed), sigs)
         targets = sorted(set(widths)) if tvars else (sorted(set(concrete) - {1}) or [1])
         for w in targets:
             cached = store.get(sha, w) if store else None

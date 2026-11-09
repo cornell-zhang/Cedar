@@ -49,9 +49,13 @@ validated: exactly one top-level `rule` (premises only `(= a b)`; actions only
 `let` bindings and exactly one `union`; keywords `:ruleset rules` and `:name`)
 or one `rewrite`; any other top-level command, action (`set`, `delete`,
 `panic`, `extract`, a second `union`, ...), keyword (`:when`, `:subsume`) or
-nested command is rejected. Only the canonical re-serialization of the
-validated parse tree is ever written into an e-graph program, so comments or
-trailing text cannot smuggle commands past the proof. For each bit width present in the target design
+nested command is rejected. The validated rule is then alpha-renamed: every
+pattern variable becomes a fresh `?cvN` and every `let` name a fresh
+`cedar_let_N`, so distinct egglog symbols can never be merged by the proof
+model (which desugars rewrites with an internal `?lhs`, treats bare `let` names
+as variables and strips `?` for Z3 names). Only the canonical serialization of
+this renamed tree is proved and written into e-graph programs, so comments,
+trailing text or name tricks cannot smuggle behaviour past the proof. For each bit width present in the target design
 the rule's single type variable is replaced by that concrete type, which both
 *guards* the rule (it can only match e-nodes of that width) and fixes the proof
 width. `cedar.rules.z3verify` (the paper's Z3 bit-vector verifier, used as a
@@ -61,8 +65,12 @@ operand vector read with `vec-get` must have an exact `vec-length` guard (the
 verifier models a vector as exactly the elements read), every operand width
 must be determined by the instance types, and widths above `max_width` (256)
 are unsupported. Certificates are keyed by the SHA-256 of the rule text, the
-width and a hash of the verifier code + Z3 version; any change forces a new
-proof.
+width and a hash of the verifier code, the admission-semantics version and
+the Z3 version; any change forces a new proof. Within a run, instances are
+applied only through the recorded admission inventory: each instance file must
+hash to its certified text, carry a certificate from the current verifier
+(otherwise it is re-proved from the recorded rule source) and apply to a width
+of the design; edited, missing or unrecorded instance files stop the run.
 
 ## EDA adapters (`cedar.eda`)
 

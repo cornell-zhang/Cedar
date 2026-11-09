@@ -58,19 +58,22 @@ PPA of every verified candidate, frontier report. Profiles and run
 directories were outside the repository; profiles were created through the
 guided setup.
 
-**Final release runs** (final wheels in a fresh environment; plugins loaded
+**Release-commit runs** (final wheels in a fresh environment; plugins loaded
 from a clean export of the release commit):
 
 | Host | Run wall clock | Agent session | Result |
 | --- | --- | --- | --- |
-| Claude Code (`--plugin-dir`) | 5 min 06 s | 5 min 28 s | completed, contract met; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; agent rule proved at 1/8/16 bits |
-| Codex (installed plugin) | 6 min 06 s | 7 min 04 s | completed, contract met; identical extracted result (deterministic extraction) |
+| Claude Code (`--plugin-dir`) | 5 min 06 s | 5 min 22 s | completed, contract met; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met |
+| Codex (installed plugin) | 6 min 26 s | 7 min 09 s | completed, contract met; identical extracted result (deterministic extraction); the agent's rule was proved at 1 and 8 bits, hit the 60 s Z3 budget at 16 bits and was rejected there |
 
 Both runs measured the same baseline (893.7 um2, 0.661 ns, 229.6 uW) and the
 same extracted candidate (551.5 um2, 0.678 ns, 160.1 uW). Phase times of the
-Claude run: baseline 102 s, direct-candidate verification + synthesis preview
-39 s, e-graph iteration incl. verification and parallel full-PPA measurement of
-both candidates 131 s, agent tasks 7 s and 11 s.
+Claude run: baseline 100 s, direct-candidate verification + synthesis preview
+40 s, e-graph iteration incl. verification and parallel full-PPA measurement of
+both candidates 134 s, agent tasks 11 s and 15 s. A first Claude run of the
+same commit took 10 min 02 s because P&R ran 240-259 s (instead of ~76 s)
+while a 24-job native LLVM build and another user's Innovus job shared the
+machine — the target assumes a reasonably idle host and licenses.
 
 **Earlier runs during development** (same flow, earlier package revisions):
 Claude Code with an editable install (5 min 04 s), Codex with seed rules

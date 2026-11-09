@@ -42,9 +42,10 @@
    `circt-opt --lower-seq-to-sv --hw-memory-sim | --export-verilog` -> Verilog,
    which must re-parse with `circt-verilog`.
 
-The separate low-level hierarchical exporter supports explicit opaque module
-boundaries; see [hierarchical opacity](hierarchical-opacity.md) for its CLI
-options and MLIR annotation.
+Set `search.hierarchical: true` to keep module boundaries and optimize module
+bodies independently instead of flattening. Component graph IDs are namespaced
+for the shared cost model; extraction and reconstruction use each component's
+own IDs. See [hierarchical optimization](hierarchical-opacity.md).
 
 ## Rule admission (`cedar.rules.certify`)
 

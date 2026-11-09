@@ -136,8 +136,8 @@ struct EggifiedOp {
         // (no non-opaque user references it) and extraction-gym emits no line for
         // it (it is unreachable from the extracted roots), so trying to extract it
         // would consume the WRONG extraction line and desync the positional
-        // line<->op pairing in runOnBlock — mistyping every subsequent op (the
-        // opaque_capture cf.br (i6,i6,i1)->(i6,i6,i4) bug). The original op is kept verbatim
+        // line<->op pairing in runOnBlock and mistype subsequent operations.
+        // The original op is kept verbatim
         // by the opaque passthrough, so leave it unextracted.
         if (!users.empty()) {
             return false;

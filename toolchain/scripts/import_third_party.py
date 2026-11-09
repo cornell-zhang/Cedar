@@ -49,6 +49,7 @@ EXCLUDES = {
         # Replaced by a small synthetic capture/reconstruction regression in
         # tests/test_open_flow.py; no design-derived input is needed.
         "test/reconstruct_opaque_region_capture",
+        "test/lower_loop_carry/comb_process_with_module_clock.mlir",
     ],
     "extraction-gym": [
         # 246 MB of upstream benchmark e-graphs; not needed to build
@@ -105,8 +106,8 @@ def _normalize_development_notes(root: Path) -> None:
             ". detectObservedClock", text,
         )
         text = re.sub(
-            r"^// accumulator leaf cf.br bb-arg type mismatch \([^\n]+ ticket\n// [^\n]+\)\.$",
-            "// accumulator leaf cf.br bb-arg type mismatch.", text, flags=re.M,
+            r"^// [^\n]+ leaf cf.br bb-arg type mismatch \([^\n]+ ticket\n// [^\n]+\)\.$",
+            "// Captured branch operand type mismatch.", text, flags=re.M,
         )
         text = re.sub(r"\s*\((?:sub-cluster [^)]* / )?issue #\d+[^)]*\)", "", text,
                       flags=re.I)
@@ -136,14 +137,82 @@ def _normalize_development_notes(root: Path) -> None:
             "// These are the `RAM` / `register` reset/init loops. The forward-merge matcher correctly classifies ^H as a genuine",
             "// These are the `RAM` / `register` reset/init loops. The forward-merge\n"
             "// matcher correctly classifies ^H as a genuine",
-        ).replace(
-            "  // off-by-one that corrupts the whole accumulator round-trip. detectObservedClock returns null for the",
-            "  // off-by-one that corrupts the whole accumulator round-trip.\n"
-            "  // detectObservedClock returns null for the",
         ).replace("// fully unroll any", "// Fully unroll any").replace(
             "// a clocked FSM whose", "// A clocked FSM whose",
         )
+        if f.name in {"EggifyOnlyPass.cpp", "ReconstructFromExtractionPass.cpp", "egg-opt.cpp"}:
+            text = re.sub(r"^[ \t]+$", "", text, flags=re.M)
         f.write_text(text)
+
+
+def _prepare_opacity_patch(root: Path) -> None:
+    """Discard the obsolete name policy before applying the generic policy patch."""
+    f = root / "src/EggifyOnlyPass.cpp"
+    text = f.read_text()
+    text, count = re.subn(
+        r"// Opaque-leaf \(blackbox\) predicate.*?(?=void EggifyOnlyPass::runHierarchical\()",
+        "// Legacy opacity policy removed by the Cedar import.\n"
+        "static bool isBlackboxLeaf(llvm::StringRef) { return false; }\n\n",
+        text, flags=re.S,
+    )
+    if count != 1:
+        raise SystemExit("EggifyOnlyPass.cpp: legacy opacity policy block not found")
+    text = re.sub(r"        // Blackbox leaves are held OPAQUE:.*?(?=        if \(info.isBlackbox\))",
+                  "        // Preserve opaque interfaces.\n", text, flags=re.S)
+    text = re.sub(r"            // Opaque leaf:.*?(?=            std::string portsVec)",
+                  "            // Preserve opaque interfaces.\n", text, flags=re.S)
+    f.write_text(text)
+
+
+def _normalize_design_examples(root: Path) -> None:
+    """Describe compiler mechanisms without historical benchmark examples."""
+    def edit(rel, substitutions):
+        f = root / rel
+        text = f.read_text()
+        for pattern, replacement in substitutions:
+            text = re.sub(pattern, lambda m: replacement, text, flags=re.M | re.S)
+        f.write_text(text)
+
+    edit("src/Egglog.cpp", [
+        (r"// pairing in runOnBlock stays aligned[^\n]*", "// pairing in runOnBlock stays aligned, preserving captured operand types."),
+        (r"    // cf.cond_br block-successor.*?(?=    op->walk)",
+         "    // Branch successor operands also capture values from the enclosing scope.\n"),
+        (r"    // needs more than 64 significant bits\..*?(?=    // IntegerAttr through)",
+         "    // needs more than 64 significant bits. Wide buses and concat masks can\n"
+         "    // carry such constants. Route any op carrying a >64-significant-bit\n"),
+    ])
+    edit("src/Egglog.h", [
+        (r"        // line<->op pairing.*?(?=        // by the opaque passthrough)",
+         "        // line<->op pairing in runOnBlock and mistype subsequent operations.\n"
+         "        // The original op is kept verbatim\n"),
+    ])
+    edit("src/egg-opt.cpp", [
+        (r"// datapath while body-less.*?(?=// assigns block-local op ids)",
+         "// datapath while external cells and untouched child modules retain their\n"
+         "// original instances and module bodies. The per-block re-eggification\n"),
+    ])
+    edit("src/LowerLoopCarryProcessesPass.cpp", [
+        (r"// Baseline pattern[^\n]*", "// Baseline pattern (single-leaf back-edge):"),
+        (r"(///   \* cf.br \^loopHeader\(new\.\.\.\)[^\n]*?) — leaf back-edge[^\n]*", "///   * cf.br ^loopHeader(new...)           — leaf back-edge."),
+        (r"  // Result type restriction:.*?(?=  // Decide whether THIS process)",
+         "  // Clocked FSM results need registers. seq::FirRegOp accepts any HW-valid\n"
+         "  // type; clock-divider processes do not need a register.\n\n"),
+        (r"  // A module can mix genuinely-clocked flops.*?(?=  Value obsClk)",
+         "  // A module can mix clocked flops and combinational processes. Inspect the\n"
+         "  // current process's wait: a data-observing or delay wait stays combinational;\n"
+         "  // a clock-edge wait takes the register path. Using a module-global clock\n"
+         "  // would incorrectly insert a cycle of latency into combinational logic.\n"),
+        (r"  // \(This matches the original[^\n]*\n  // the comb.mux's leaves rather than via the firreg loop\.\)",
+         "  // The initial values enter through the combinational mux leaves."),
+    ])
+    edit("test/lower_loop_carry/multi_state_fsm.mlir", [
+        (r"// original [^\n]*matcher rejected this shape because cond_br operands had",
+         "// original single-leaf matcher rejected this shape because cond_br operands had"),
+    ])
+    for rel in ["test/reconstruct_synthetic_nodes/Inputs/rom_alias.egg",
+                "test/reconstruct_synthetic_nodes/Inputs/circt.egg", "test/replacement/circt.egg"]:
+        edit(rel, [(r";; \(e\.g\.[^\n]*that gap is in CIRCT, not eggify\.",
+                    ";; Unsupported process lowering is a CIRCT frontend limitation.")])
 
 
 def _edit_dialegg(root: Path) -> None:
@@ -159,6 +228,8 @@ def _edit_dialegg(root: Path) -> None:
             r"^[A-Z]+_REWRITE_RULES$", "CEDAR_REWRITE_RULES", f.read_text(), flags=re.M,
         ))
     _normalize_development_notes(root)
+    _prepare_opacity_patch(root)
+    _normalize_design_examples(root)
 
     # Preserve Cedar's functional fixes when refreshing the pinned snapshot.
     subprocess.run([

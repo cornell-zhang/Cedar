@@ -5,6 +5,8 @@
 
 extern llvm::cl::opt<std::string> eggFileOpt;
 extern llvm::cl::opt<bool> hierarchicalReconstructOpt;
+extern llvm::cl::opt<std::string> optModuleOpt;
+mlir::LogicalResult validateModuleSelection(mlir::ModuleOp module);
 static llvm::cl::opt<std::string> extractionFileOpt("extraction-file", llvm::cl::desc("Path to extraction results file"));
 
 void ReconstructFromExtractionPass::runOnBlock(mlir::Block& block, const std::string& blockName, std::ifstream& extractionFile) {
@@ -170,7 +172,11 @@ static void sanitizeModuleNames(mlir::ModuleOp module) {
 
 void ReconstructFromExtractionPass::runOnOperation() {
     mlir::ModuleOp module = getOperation();
-    
+    if (mlir::failed(validateModuleSelection(module))) {
+        signalPassFailure();
+        return;
+    }
+
     // Open extraction file
     std::ifstream extractionFile(extractionFilename);
     if (!extractionFile.is_open()) {
@@ -178,7 +184,7 @@ void ReconstructFromExtractionPass::runOnOperation() {
         signalPassFailure();
         return;
     }
-    
+
     // For the hierarchical flow, reconstruct only the top-level (non-instantiated)
     // module: a single global extraction file replays against one module only
     // (per-block re-eggification uses block-local op ids). Collect the set of
@@ -194,9 +200,11 @@ void ReconstructFromExtractionPass::runOnOperation() {
     // Find all functions and hw modules in the module
     for (mlir::Operation& op: module.getOps()) {
         if (auto funcOp = llvm::dyn_cast<mlir::func::FuncOp>(&op)) {
+            if (!optModuleOpt.empty())
+                continue;
             llvm::StringRef funcName = funcOp.getName();
             LLVM_DEBUG(llvm::dbgs() << "Reconstructing function: " << funcName << "\n");
-            
+
             for (mlir::Block& block: funcOp.getRegion().getBlocks()) {
                 std::string parentOpName = block.getParentOp()->getName().getStringRef().str();
                 std::string blockName = funcName.str() + "_" + parentOpName;
@@ -205,7 +213,8 @@ void ReconstructFromExtractionPass::runOnOperation() {
         } else if (auto hwModuleOp = llvm::dyn_cast<circt::hw::HWModuleOp>(&op)) {
             llvm::StringRef moduleName = hwModuleOp.getName();
 
-            if (hwModuleOp.isPrivate()) {
+            if ((!optModuleOpt.empty() && moduleName != optModuleOpt) ||
+                (optModuleOpt.empty() && hwModuleOp.isPrivate())) {
                 continue;
             }
 
@@ -219,7 +228,7 @@ void ReconstructFromExtractionPass::runOnOperation() {
             }
 
             LLVM_DEBUG(llvm::dbgs() << "Reconstructing HW module: " << moduleName << "\n");
-            
+
             for (mlir::Block& block: hwModuleOp.getBodyRegion().getBlocks()) {
                 std::string parentOpName = block.getParentOp()->getName().getStringRef().str();
                 std::string blockName = moduleName.str() + "_" + parentOpName;
@@ -238,6 +247,11 @@ void ReconstructFromExtractionPass::runOnOperation() {
         clean = true;
 
         module.walk([&](mlir::Operation* op) {
+            if (!optModuleOpt.empty()) {
+                auto parent = op->getParentOfType<circt::hw::HWModuleOp>();
+                if (!parent || parent.getName() != optModuleOpt)
+                    return;
+            }
             bool deadFunctionCall = mlir::isa<mlir::func::CallOp>(op) && op->use_empty();
             bool unusedResults = op->getNumResults() > 0 && op->use_empty();
             if (mlir::isOpTriviallyDead(op) || deadFunctionCall || unusedResults) {
@@ -259,7 +273,7 @@ void ReconstructFromExtractionPass::runOnOperation() {
 llvm::LogicalResult ReconstructFromExtractionPass::initialize(mlir::MLIRContext* context) {
     // Initialize eggFilePath from command-line option
     eggFilePath = eggFileOpt;
-    
+
     // Make sure MLIR file exists
     if (!llvm::sys::fs::exists(mlirFilePath)) {
         llvm::errs() << "MLIR file does not exist: " << mlirFilePath << "\n";
@@ -280,14 +294,14 @@ llvm::LogicalResult ReconstructFromExtractionPass::initialize(mlir::MLIRContext*
 
     // Set filenames
     std::string name = mlirFilePath.substr(0, mlirFilePath.find(".mlir"));
-    
+
     // Check if extraction file was specified via command line
     if (!extractionFileOpt.empty()) {
         extractionFilename = extractionFileOpt;
     } else {
         extractionFilename = name + ".extracted.txt";
     }
-    
+
     metadataFilename = name + ".extraction-metadata.txt";
 
     // Make sure extraction file exists

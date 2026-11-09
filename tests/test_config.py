@@ -37,6 +37,16 @@ def test_unknown_keys_rejected(tmp_path):
     assert any("unknown key" in x for x in e.value.errors)
 
 
+def test_hierarchical_configuration(tmp_path):
+    (tmp_path / "t.v").write_text("module t; endmodule\n")
+    with pytest.raises(ConfigError, match="requires search.hierarchical"):
+        C.load_design(str(write(tmp_path / "bad.yaml", design_doc(search={"opaque_modules": ["cell"]}))))
+    d = C.load_design(str(write(tmp_path / "good.yaml", design_doc(
+        search={"hierarchical": True, "opaque_modules": ["cell"]}))))
+    assert d.data["search"]["hierarchical"]
+    assert d.data["search"]["opaque_modules"] == ["cell"]
+
+
 def test_timing_goal_required_and_units(tmp_path):
     (tmp_path / "t.v").write_text("")
     with pytest.raises(ConfigError):

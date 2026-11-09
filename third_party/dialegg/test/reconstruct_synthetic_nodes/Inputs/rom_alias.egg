@@ -71,7 +71,7 @@
 ;; original MLIR op in place during reconstruction so the body survives
 ;; round-trip losslessly. Note: ExportVerilog still cannot lower these
 ;; processes on designs where llhd-lower-processes / llhd-deseq bail
-;; (e.g. design accumulator_CALC_int{8,16}) — that gap is in CIRCT, not eggify.
+;; Unsupported process lowering is a CIRCT frontend limitation.
 
 ;;;; RootNode for extraction ;;;;
 (datatype Root

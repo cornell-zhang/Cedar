@@ -1,45 +1,26 @@
-diff --git a/third_party/dialegg/src/EggifyOnlyPass.cpp b/third_party/dialegg/src/EggifyOnlyPass.cpp
-index 87cc91c..ea021bf 100644
 --- a/third_party/dialegg/src/EggifyOnlyPass.cpp
 +++ b/third_party/dialegg/src/EggifyOnlyPass.cpp
-@@ -1,5 +1,6 @@
+@@ -1,11 +1,14 @@
  #include <cctype>
  #include <chrono>
 +#include "llvm/Support/CommandLine.h"
  #include "EggifyOnlyPass.h"
 
  #define DEBUG_TYPE "dialegg"
-@@ -211,38 +212,19 @@ static std::string sanitizeEgglogId(llvm::StringRef in) {
+
+ extern llvm::cl::opt<std::string> eggFileOpt;
+ extern llvm::cl::opt<bool> hierarchicalOpt;
++extern llvm::cl::opt<std::string> optModuleOpt;
++mlir::LogicalResult validateModuleSelection(mlir::ModuleOp module);
+
+ void EggifyOnlyPass::runEgglog(const std::vector<EggifiedOp*>& block, const std::string& blockName) {
+     std::ifstream eggFile(eggFilePath);
+@@ -211,8 +214,20 @@
      return out;
  }
 
--// Opaque-leaf (blackbox) predicate for the hierarchical emit.
--//
--// A "blackbox" is a leaf we deliberately do NOT optimize inside: DesignWare,
--// RAM/memory-compiler wrappers, std cells, clock gates, and the design
--// opaque_cell_* spec cells. circt-verilog still hands these a trivial hw.output
--// body (output ports driven by constants/zeroes), so classifying purely on
--// "no extractable ops" (bodyOpIds.empty()) would let several of them slip into
--// the op layer as HwModule nodes. The
--// correct mechanism is a NAME-PATTERN match: these names are emitted as opaque
--// (Submodule ...) e-nodes so they sit in the module hierarchy, survive
--// saturation unchanged (no rule has a Submodule LHS), and round-trip verbatim.
--//
--// Adding a name here
--// is the supported way to mark a new opaque leaf; it does not affect the flat
--// path (--hierarchical only).
--static bool isBlackboxLeaf(llvm::StringRef name) {
--    static const char* kPrefixes[] = {
--        "opaque_cell_",   // design blackbox spec cells (SINK/SRC0/...)
--        "opaque_arithmetic_",       // DesignWare wrappers (opaque_arithmetic_lsd, ...)
--        "DW_",          // raw DesignWare cells
--        "opaque_memory_",  // RAM wrappers + their *_logic bodies
--        "opaque_memory_cell_",      // raw memory-compiler RAM cells
--        "opaque_clock_cell_",         // integrated clock-gate std cells (opaque_clock_cell_QD12*)
--        "opaque_scan_cell_",      // scan flop std cells
--    };
--    for (const char* p : kPrefixes)
--        if (name.starts_with(p))
+-// Legacy opacity policy removed by the Cedar import.
+-static bool isBlackboxLeaf(llvm::StringRef) { return false; }
 +// Internal modules are optimizable unless the user explicitly makes them opaque.
 +// External declarations are always opaque, regardless of their symbol names.
 +static llvm::cl::list<std::string> opaqueModules(
@@ -51,16 +32,13 @@ index 87cc91c..ea021bf 100644
 +        return true;
 +    for (const std::string& name : opaqueModules)
 +        if (module.getName() == name)
-             return true;
--    // Exact-match leaves (clock gate, slcg power gate, the AND std cell).
--    return name == "opaque_clock_cell" ||
--           name == "NV_design_accumulator_slcg" ||
--           name == "opaque_logic_cell";
++            return true;
 +    return false;
- }
++}
 
  void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
-@@ -258,7 +240,7 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
+     // ONE shared Egglog instance for the whole design so op ids are globally
+@@ -227,7 +242,7 @@
      struct ModuleInfo {
          std::string name;                       // hw.module symbol name
          bool isPrivate = false;
@@ -69,7 +47,7 @@ index 87cc91c..ea021bf 100644
          std::vector<std::string> bodyOpIds;     // print-ids of extractable body ops
          std::vector<std::string> portNames;     // input+output port names
          std::vector<mlir::Operation*> instances;// hw.instance ops in this module
-@@ -269,27 +251,27 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
+@@ -238,22 +253,27 @@
 
      for (mlir::Operation& op : module.getOps()) {
          auto hwModuleOp = llvm::dyn_cast<circt::hw::HWModuleOp>(&op);
@@ -77,6 +55,8 @@ index 87cc91c..ea021bf 100644
 -            // Non-hw.module top-level ops are not part of the hierarchical
 -            // module layer; skip them quietly (the flat path warns, but here
 -            // we deliberately keep going so the whole design is emitted).
+-            continue;
+-        }
 +        if (auto external = llvm::dyn_cast<circt::hw::HWModuleExternOp>(&op)) {
 +            ModuleInfo info;
 +            info.name = external.getName().str();
@@ -84,8 +64,8 @@ index 87cc91c..ea021bf 100644
 +            for (const circt::hw::PortInfo& port : external.getPortList())
 +                info.portNames.push_back(port.getName().str());
 +            modules.push_back(std::move(info));
-             continue;
-         }
++            continue;
++        }
 +        if (!hwModuleOp)
 +            continue;
 
@@ -98,17 +78,12 @@ index 87cc91c..ea021bf 100644
          for (const circt::hw::PortInfo& port : ports)
              info.portNames.push_back(port.getName().str());
 
--        // Blackbox leaves are held OPAQUE: skip eggifying their body entirely so
--        // no op-level (comb_*/seq_* / hw_output) e-nodes leak into the e-graph
--        // for them. circt-verilog hands these a trivial hw.output body; without
--        // this skip they would be classified as HwModule (op layer) instead of
--        // the opaque Submodule the task requires. We still record their ports
--        // (above) so the Submodule node carries the interface for round-trip.
+-        // Preserve opaque interfaces.
 +        // Preserve the interface while excluding explicitly opaque bodies.
          if (info.isBlackbox) {
              modules.push_back(std::move(info));
              continue;
-@@ -297,8 +279,7 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
+@@ -261,8 +281,7 @@
 
          // Eggify every block of this (non-blackbox) module into the SHARED
          // egglog. Unlike the flat path we do NOT skip private submodules --
@@ -118,28 +93,26 @@ index 87cc91c..ea021bf 100644
          for (mlir::Block& block : hwModuleOp.getBodyRegion().getBlocks()) {
              for (mlir::Value arg : block.getArguments())
                  egglog.eggifyValue(arg);
-@@ -339,15 +320,8 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
+@@ -303,8 +322,8 @@
      for (const ModuleInfo& mi : modules) {
          std::string sym = sanitizeEgglogId(mi.name);
 
 -        if (mi.isBlackbox || mi.bodyOpIds.empty()) {
--            // Opaque leaf: either a name-pattern blackbox (DesignWare / RAM /
--            // std-cell / opaque_cell_* -- held opaque by design even though
--            // circt-verilog gave it a trivial body) or a genuinely body-less
--            // module. Represent it as a (Submodule name ports) e-node so the
--            // rest of the design can reference it, it survives saturation
--            // unchanged (no rule has a Submodule LHS), and it round-trips
--            // verbatim. Port names go into a StringVec so reconstruction can
--            // recover the interface.
+-            // Preserve opaque interfaces.
 +        if (mi.isBlackbox) {
 +            // Opaque modules retain their port interfaces in the module layer.
              std::string portsVec = "(vec-of";
              if (mi.portNames.empty())
                  portsVec = "(vec-empty)";
-@@ -415,6 +389,30 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
+@@ -371,6 +390,34 @@
+
  void EggifyOnlyPass::runOnOperation() {
      mlir::ModuleOp module = getOperation();
-
++    if (mlir::failed(validateModuleSelection(module))) {
++        signalPassFailure();
++        return;
++    }
++
 +    if (!hierarchicalOpt && !opaqueModules.empty()) {
 +        module.emitError("--opaque-module requires --hierarchical");
 +        signalPassFailure();
@@ -157,13 +130,151 @@ index 87cc91c..ea021bf 100644
 +        auto marker = internal->getAttr("cedar.blackbox");
 +        if (!marker)
 +            continue;
-+        if (!hierarchicalOpt || !llvm::isa<mlir::UnitAttr>(marker)) {
++        if ((!hierarchicalOpt && optModuleOpt.empty()) || !llvm::isa<mlir::UnitAttr>(marker)) {
 +            internal.emitError("cedar.blackbox must be a unit attribute and requires --hierarchical");
 +            signalPassFailure();
 +            return;
 +        }
 +    }
-+
+
      // Hierarchical emit is a separate, additive code path gated behind
      // --hierarchical. The flat path below remains unchanged.
-     if (hierarchicalOpt) {
+@@ -382,6 +429,8 @@
+     // Find all functions and hw modules in the module
+     for (mlir::Operation& op: module.getOps()) {
+         if (auto funcOp = llvm::dyn_cast<mlir::func::FuncOp>(&op)) {
++            if (!optModuleOpt.empty())
++                continue;
+             llvm::StringRef funcName = funcOp.getName();
+             LLVM_DEBUG(llvm::dbgs() << "Running on function: " << funcName << "\n");
+
+@@ -393,7 +442,8 @@
+         } else if (auto hwModuleOp = llvm::dyn_cast<circt::hw::HWModuleOp>(&op)) {
+             llvm::StringRef moduleName = hwModuleOp.getName();
+
+-            if (hwModuleOp.isPrivate()) {
++            if ((!optModuleOpt.empty() && hwModuleOp.getName() != optModuleOpt) ||
++                (optModuleOpt.empty() && hwModuleOp.isPrivate())) {
+                 llvm::outs() << "Skipping private HW module: " << moduleName << " (submodule; flatten design to include)\n";
+                 continue;
+             }
+--- a/third_party/dialegg/src/egg-opt.cpp
++++ b/third_party/dialegg/src/egg-opt.cpp
+@@ -1,5 +1,6 @@
+ #include "llvm/Support/FileSystem.h"
+ #include "llvm/Support/CommandLine.h"
++#include "llvm/Support/JSON.h"
+ #include "mlir/InitAllDialects.h"
+ #include "mlir/InitAllPasses.h"
+ #include "mlir/Tools/mlir-opt/MlirOptMain.h"
+@@ -58,6 +59,49 @@
+     llvm::cl::desc("Reconstruct only top-level (non-instantiated) modules; leave submodule bodies verbatim"),
+     llvm::cl::init(false));
+
++// Select one module for a local round-trip while preserving its neighbours.
++llvm::cl::opt<std::string> optModuleOpt(
++    "opt-module", llvm::cl::desc("Optimize only this internal HW module (including private modules)"));
++
++mlir::LogicalResult validateModuleSelection(mlir::ModuleOp module) {
++    if (optModuleOpt.empty())
++        return mlir::success();
++    if (hierarchicalOpt || hierarchicalReconstructOpt)
++        return module.emitError("--opt-module cannot be combined with global hierarchical emission/reconstruction");
++    auto selected = llvm::dyn_cast_or_null<circt::hw::HWModuleOp>(module.lookupSymbol(optModuleOpt));
++    if (!selected)
++        return module.emitError("--opt-module does not name an internal HW module: ") << optModuleOpt;
++    if (selected->hasAttr("cedar.blackbox"))
++        return selected.emitError("cannot optimize a cedar.blackbox module");
++    return mlir::success();
++}
++
++namespace {
++class ModuleInventoryPass : public mlir::PassWrapper<ModuleInventoryPass, mlir::OperationPass<mlir::ModuleOp>> {
++public:
++    llvm::StringRef getArgument() const override { return "list-hw-modules"; }
++    llvm::StringRef getDescription() const override { return "List HW module symbols and opaque boundaries as JSON"; }
++    void runOnOperation() override {
++        llvm::json::Array modules;
++        for (mlir::Operation& op : getOperation().getOps()) {
++            bool external = llvm::isa<circt::hw::HWModuleExternOp>(op);
++            if (!external && !llvm::isa<circt::hw::HWModuleOp>(op))
++                continue;
++            auto marker = op.getAttr("cedar.blackbox");
++            if (marker && !llvm::isa<mlir::UnitAttr>(marker)) {
++                op.emitError("cedar.blackbox must be a unit attribute");
++                signalPassFailure();
++                return;
++            }
++            modules.push_back(llvm::json::Object{
++                {"name", mlir::SymbolTable::getSymbolName(&op).getValue().str()},
++                {"external", external}, {"opaque", external || bool(marker)}});
++        }
++        llvm::outs() << llvm::json::Value(std::move(modules)) << "\n";
++    }
++};
++}
++
+ std::string getMlirFile(int argc, char** argv) {
+     for (int i = 1; i < argc; i++) {
+         if (argv[i][0] != '-') {
+@@ -78,6 +122,7 @@
+
+     // Register passes
+     mlir::registerAllPasses();
++    mlir::PassRegistration<ModuleInventoryPass>();
+     // Temporarily commenting out StableHLO pass registration
+     // mlir::stablehlo::registerPassPipelines();
+     // mlir::stablehlo::registerPasses();
+--- a/third_party/dialegg/src/ReconstructFromExtractionPass.cpp
++++ b/third_party/dialegg/src/ReconstructFromExtractionPass.cpp
+@@ -5,6 +5,8 @@
+
+ extern llvm::cl::opt<std::string> eggFileOpt;
+ extern llvm::cl::opt<bool> hierarchicalReconstructOpt;
++extern llvm::cl::opt<std::string> optModuleOpt;
++mlir::LogicalResult validateModuleSelection(mlir::ModuleOp module);
+ static llvm::cl::opt<std::string> extractionFileOpt("extraction-file", llvm::cl::desc("Path to extraction results file"));
+
+ void ReconstructFromExtractionPass::runOnBlock(mlir::Block& block, const std::string& blockName, std::ifstream& extractionFile) {
+@@ -170,6 +172,10 @@
+
+ void ReconstructFromExtractionPass::runOnOperation() {
+     mlir::ModuleOp module = getOperation();
++    if (mlir::failed(validateModuleSelection(module))) {
++        signalPassFailure();
++        return;
++    }
+
+     // Open extraction file
+     std::ifstream extractionFile(extractionFilename);
+@@ -194,6 +200,8 @@
+     // Find all functions and hw modules in the module
+     for (mlir::Operation& op: module.getOps()) {
+         if (auto funcOp = llvm::dyn_cast<mlir::func::FuncOp>(&op)) {
++            if (!optModuleOpt.empty())
++                continue;
+             llvm::StringRef funcName = funcOp.getName();
+             LLVM_DEBUG(llvm::dbgs() << "Reconstructing function: " << funcName << "\n");
+
+@@ -205,7 +213,8 @@
+         } else if (auto hwModuleOp = llvm::dyn_cast<circt::hw::HWModuleOp>(&op)) {
+             llvm::StringRef moduleName = hwModuleOp.getName();
+
+-            if (hwModuleOp.isPrivate()) {
++            if ((!optModuleOpt.empty() && moduleName != optModuleOpt) ||
++                (optModuleOpt.empty() && hwModuleOp.isPrivate())) {
+                 continue;
+             }
+
+@@ -238,6 +247,11 @@
+         clean = true;
+
+         module.walk([&](mlir::Operation* op) {
++            if (!optModuleOpt.empty()) {
++                auto parent = op->getParentOfType<circt::hw::HWModuleOp>();
++                if (!parent || parent.getName() != optModuleOpt)
++                    return;
++            }
+             bool deadFunctionCall = mlir::isa<mlir::func::CallOp>(op) && op->use_empty();
+             bool unusedResults = op->getNumResults() > 0 && op->use_empty();
+             if (mlir::isOpTriviallyDead(op) || deadFunctionCall || unusedResults) {

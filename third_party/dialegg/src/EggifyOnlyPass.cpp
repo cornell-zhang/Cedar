@@ -7,6 +7,8 @@
 
 extern llvm::cl::opt<std::string> eggFileOpt;
 extern llvm::cl::opt<bool> hierarchicalOpt;
+extern llvm::cl::opt<std::string> optModuleOpt;
+mlir::LogicalResult validateModuleSelection(mlir::ModuleOp module);
 
 void EggifyOnlyPass::runEgglog(const std::vector<EggifiedOp*>& block, const std::string& blockName) {
     std::ifstream eggFile(eggFilePath);
@@ -147,13 +149,13 @@ void EggifyOnlyPass::runHierarchicalEgglog(const std::vector<EggifiedOp*>& allOp
 
 void EggifyOnlyPass::saveExtractionMetadata(const std::vector<EggifiedOp*>& block, const std::string& blockName) {
     std::ofstream metadataFile(metadataFilename, std::ios::app);
-    
+
     metadataFile << "BLOCK: " << blockName << "\n";
-    
+
     for (const EggifiedOp* eggOp: block) {
         if (eggOp->shouldBeExtracted()) {
             metadataFile << eggOp->getPrintId() << "\t";
-            
+
             // Save the MLIR operation for reference
             if (eggOp->mlirOp != nullptr) {
                 std::string mlirOpStr;
@@ -164,7 +166,7 @@ void EggifyOnlyPass::saveExtractionMetadata(const std::vector<EggifiedOp*>& bloc
             metadataFile << "\n";
         }
     }
-    
+
     metadataFile << "END_BLOCK\n\n";
     metadataFile.close();
 }
@@ -388,6 +390,10 @@ void EggifyOnlyPass::runHierarchical(mlir::ModuleOp module) {
 
 void EggifyOnlyPass::runOnOperation() {
     mlir::ModuleOp module = getOperation();
+    if (mlir::failed(validateModuleSelection(module))) {
+        signalPassFailure();
+        return;
+    }
 
     if (!hierarchicalOpt && !opaqueModules.empty()) {
         module.emitError("--opaque-module requires --hierarchical");
@@ -406,7 +412,7 @@ void EggifyOnlyPass::runOnOperation() {
         auto marker = internal->getAttr("cedar.blackbox");
         if (!marker)
             continue;
-        if (!hierarchicalOpt || !llvm::isa<mlir::UnitAttr>(marker)) {
+        if ((!hierarchicalOpt && optModuleOpt.empty()) || !llvm::isa<mlir::UnitAttr>(marker)) {
             internal.emitError("cedar.blackbox must be a unit attribute and requires --hierarchical");
             signalPassFailure();
             return;
@@ -423,9 +429,11 @@ void EggifyOnlyPass::runOnOperation() {
     // Find all functions and hw modules in the module
     for (mlir::Operation& op: module.getOps()) {
         if (auto funcOp = llvm::dyn_cast<mlir::func::FuncOp>(&op)) {
+            if (!optModuleOpt.empty())
+                continue;
             llvm::StringRef funcName = funcOp.getName();
             LLVM_DEBUG(llvm::dbgs() << "Running on function: " << funcName << "\n");
-            
+
             for (mlir::Block& block: funcOp.getRegion().getBlocks()) {
                 std::string parentOpName = block.getParentOp()->getName().getStringRef().str();
                 std::string blockName = funcName.str() + "_" + parentOpName;
@@ -434,13 +442,14 @@ void EggifyOnlyPass::runOnOperation() {
         } else if (auto hwModuleOp = llvm::dyn_cast<circt::hw::HWModuleOp>(&op)) {
             llvm::StringRef moduleName = hwModuleOp.getName();
 
-            if (hwModuleOp.isPrivate()) {
+            if ((!optModuleOpt.empty() && hwModuleOp.getName() != optModuleOpt) ||
+                (optModuleOpt.empty() && hwModuleOp.isPrivate())) {
                 llvm::outs() << "Skipping private HW module: " << moduleName << " (submodule; flatten design to include)\n";
                 continue;
             }
 
             LLVM_DEBUG(llvm::dbgs() << "Running on HW module: " << moduleName << "\n");
-            
+
             for (mlir::Block& block: hwModuleOp.getBodyRegion().getBlocks()) {
                 std::string parentOpName = block.getParentOp()->getName().getStringRef().str();
                 std::string blockName = moduleName.str() + "_" + parentOpName;
@@ -461,7 +470,7 @@ void EggifyOnlyPass::runOnOperation() {
 llvm::LogicalResult EggifyOnlyPass::initialize(mlir::MLIRContext* context) {
     // Initialize eggFilePath from command-line option
     eggFilePath = eggFileOpt;
-    
+
     // Make sure both files exist
     if (!llvm::sys::fs::exists(mlirFilePath)) {
         llvm::errs() << "MLIR file does not exist: " << mlirFilePath << "\n";

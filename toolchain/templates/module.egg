@@ -13,9 +13,8 @@
 ;;     (Instance String Module ...) ; an instantiation, binds a submodule
 ;;     (Submodule ...))             ; a body-less / opaque submodule reference
 ;;
-;; This file is injected after `(include "base.egg")` by eqsat.py ONLY when the
-;; --hierarchical flag is set; the flat path never sees it, so the default
-;; (op-level) flow is byte-for-byte unchanged.
+;; Hierarchical programs inject this file after `(include "base.egg")`.
+;; Flat programs omit it.
 
 ;; A vector of port / signal names (for opaque submodule interfaces).
 (sort StringVec (Vec String))
@@ -29,9 +28,8 @@
   ;; operand connections (op-level values driving the instance ports).
   (Instance String Module OpVec)
   ;; A body-less / blackbox submodule held opaque: symbol name + port names.
-  ;; Used for DesignWare / RAM / std-cell / NV_BLKBOX leaves that have no
-  ;; synthesizable body we represent at op level. Saturation never rewrites
-  ;; its interior (it has none); it round-trips verbatim.
+  ;; External declarations and explicitly opaque internal modules retain their
+  ;; interfaces here. Their bodies are excluded from op-level saturation.
   (Submodule String StringVec))
 
 ;; A vector of Module nodes (a design / subunit is a vec of its modules).

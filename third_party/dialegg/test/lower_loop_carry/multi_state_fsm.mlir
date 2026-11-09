@@ -2,7 +2,7 @@
 //
 // Multi-state FSM body: cf.cond_br jumps directly back to the loop header
 // with operands on either side (no leaf cf.br ^L(...) terminator). The
-// original design matcher rejected this shape because cond_br operands had
+// original single-leaf matcher rejected this shape because cond_br operands had
 // to be empty. The extended matcher synthesizes a comb.mux tree over the
 // branch conditions and binds the process results combinationally.
 

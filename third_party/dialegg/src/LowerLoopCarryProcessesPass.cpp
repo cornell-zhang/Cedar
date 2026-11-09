@@ -9,7 +9,7 @@
 // has a back-edge from internal blocks to the wait's parent block
 // ("control from entry and wait does not converge" / "observes 0 values").
 //
-// Baseline pattern (design saturation FSM, single-leaf back-edge):
+// Baseline pattern (single-leaf back-edge):
 //   %r:N = llhd.process -> Ts... {
 //     cf.br ^L(init...)
 //   ^L(carry...: Ts...):
@@ -91,7 +91,7 @@ namespace {
 /// Value() if the structure isn't supported.
 ///
 /// Handles three terminator shapes:
-///   * cf.br ^loopHeader(new...)           — leaf back-edge (design shape).
+///   * cf.br ^loopHeader(new...)           — leaf back-edge.
 ///   * cf.br ^succ(...)                    — fall-through to a single-pred
 ///                                           successor; if ^succ has args
 ///                                           we pre-bind them to the br's
@@ -1153,31 +1153,18 @@ static bool tryLowerProcess(llhd::ProcessOp processOp, hw::HWModuleOp module,
     yieldHeaderIdx.push_back(blockArg.getArgNumber());
   }
 
-  // Result type restriction: in the design / generalized FSM path we need a
-  // firreg per result. seq::FirRegOp accepts any HW-valid type, so we no
-  // longer require IntegerType — the clock-divider path doesn't need a
-  // firreg at all.
+  // Clocked FSM results need registers. seq::FirRegOp accepts any HW-valid
+  // type; clock-divider processes do not need a register.
 
   // Decide whether THIS process is registered (`always @(posedge clk ...)`)
   // or combinational (`always @(*)`), then find its clock + reset.
   //
   // The decision MUST be driven by what *this* process's own wait observes,
   // NOT by whether the surrounding module happens to contain any clock.
-  // A module can mix genuinely-clocked flops and a combinational process:
-  // design accumulator INT8 has clocked firregs (i_sat_vld / i_sat_sel / i_sum_pd,
-  // each with their own seq.to_clock %design_core_clk) alongside a purely
-  // combinational `always @(*)` block for i_sat_bits that CIRCT lowers to
-  // an llhd.process whose delay-free wait observes the *data* signals
-  // (i_sum_sign / i_sum_msb / i_sum_pd), never a clock edge. Keying on the
-  // module-global clock (the old `findExistingClock(module)` test) wrongly
-  // registered that combinational process, inserting a phantom flop that
-  // shifted every downstream sample by one cycle — a rule-independent
-  // off-by-one that corrupts the whole accumulator round-trip.
-  // detectObservedClock returns null for the
-  // genuinely combinational `always @(*)` shape (mux3_fsm, accumulator i_sat_bits)
-  // and for delay-waits, so those keep their combinational binding; it
-  // returns the observed clock for a real posedge-clk FSM (multi_booth_8bit,
-  // RAM array-write), which then takes the firreg path.
+  // A module can mix clocked flops and combinational processes. Inspect the
+  // current process's wait: a data-observing or delay wait stays combinational;
+  // a clock-edge wait takes the register path. Using a module-global clock
+  // would incorrectly insert a cycle of latency into combinational logic.
   Value obsClk = isDelayWait ? Value{} : detectObservedClock(waitOp);
   bool useFirreg = obsClk != nullptr;
 
@@ -1231,8 +1218,7 @@ static bool tryLowerProcess(llhd::ProcessOp processOp, hw::HWModuleOp module,
   // with placeholder values created later. Doing the comb-path substitution
   // now keeps things simple — even in firreg mode the init equals reset,
   // which is what observed `carry` ought to be at the moment of evaluation.
-  // (This matches the original design behavior, which referenced init via
-  // the comb.mux's leaves rather than via the firreg loop.)
+  // The initial values enter through the combinational mux leaves.
   for (auto [i, arg] : llvm::enumerate(loopHeader->getArguments())) {
     if (isYieldArg.contains(i))
       arg.replaceAllUsesWith(initOps[i]);

@@ -137,11 +137,19 @@ measurement:
   approximate_pruning: false
 search:
   preset: quick                        # or paper; individual fields override the preset
+  hierarchical: false                 # true: optimize module bodies without flattening
+  opaque_modules: []                   # exact module symbols excluded in hierarchical mode
   run_timeout_s: 3600                  # overall wall-clock budget (quick 3600, paper 172800);
                                        # see "Run budget" in docs/workflow.md
 agent:
   stage_models: {}                     # e.g. {proposal: <model>, selection: <model>}
 ```
+
+`search.hierarchical: true` preserves module definitions and instances during
+e-graph optimization. Internal modules, including private children, are
+optimized independently; external declarations and `opaque_modules` are kept.
+The assembled candidate goes through the usual whole-design correctness and
+PPA gates. See [hierarchical optimization](hierarchical-opacity.md).
 
 Validation rules beyond the schema:
 

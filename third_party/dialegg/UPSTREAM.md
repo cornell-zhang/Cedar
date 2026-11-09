@@ -54,6 +54,8 @@ Removed from the snapshot:
   helper scripts with hard-coded developer paths; not used by the build.
 * `test/circt/sm/` — test inputs that are not redistributable and are not part
   of any lit test or of the `egg-opt` build.
+* `test/lower_loop_carry/comb_process_with_module_clock.mlir` — replaced by
+  the synthetic mixed-process regression in Cedar's `tests/test_open_flow.py`.
 * `test/reconstruct_opaque_region_capture/` — replaced by the synthetic
   opaque-region capture regression in Cedar's `tests/test_open_flow.py`.
 
@@ -66,8 +68,13 @@ Functional changes to `egg-opt`:
   `--opaque-module=<symbol>` or the unit attribute `cedar.blackbox`.
   Invalid opacity configuration fails with a diagnostic. These controls require
   `--hierarchical`; ordinary flat emission is unchanged.
-  The importer applies `toolchain/patches/dialegg-opaque-modules.patch` to
-  preserve this fix across snapshot refreshes. Synthetic regressions live in
+  `--list-hw-modules` provides a JSON inventory, and `--opt-module=<symbol>`
+  selects one internal body for matching emission/reconstruction, including
+  private modules. Reconstruction cleanup stays within that selected body.
+  The optional Cedar workflow uses these controls for independent-module
+  optimization (`tests/test_hierarchical_flow.py`).
+  The importer first discards the obsolete name policy, then applies `toolchain/patches/dialegg-opaque-modules.patch` to
+  preserve these fixes across snapshot refreshes. Synthetic regressions live in
   `tests/test_hierarchical_opacity.py`.
 
 Other edits:

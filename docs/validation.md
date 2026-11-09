@@ -447,5 +447,5 @@ tests fail.
   Variable operand vectors must have one exact length guard; `comb_concat`
   over a matched non-empty vector is unsupported.
 * `circt-lec` verification supports combinational designs only.
-* The hierarchical design accumulator driver from the paper's experiments is not part of
-  this release.
+* Hierarchy-preserving optimization is optional and searches within module
+  bodies; cross-module rewrites are not supported. See `docs/hierarchical-opacity.md`.

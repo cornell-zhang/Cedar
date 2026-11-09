@@ -127,11 +127,13 @@ added to the pool (and certified like every other rule).
 ## Special cases from the paper's experiments
 
 * **Hierarchical designs.** The default flow flattens private submodules
-  (`--hw-flatten-modules`) before eggification. The toolchain also ships the
-  hierarchical `Module` datatype (`module.egg`, `egg-opt --hierarchical`) used by
-  the paper's design accumulator study, whose dedicated driver ran DC-only leaf
-  evaluation with whole-design power measured separately. That driver is not part
-  of this release; DC-only evaluation corresponds to
+  (`--hw-flatten-modules`) before eggification. Set `search.hierarchical: true`
+  to optimize internal module bodies independently while retaining definitions,
+  instances and opaque boundaries. The assembled candidate uses the ordinary
+  whole-design verification and measurement flow. See
+  [hierarchical optimization](hierarchical-opacity.md). The paper's dedicated
+  driver and its separate leaf/whole-design measurement procedure are replaced
+  by this generic option; DC-only evaluation remains available through
   `measurement.mode: synthesis-only` with an area/delay objective.
 * **Multiple clocks / non-`clk` clock ports** are expressed through the design
   spec (`clocks[].port`, user `sdc`); the generated SDC binds the declared port.

@@ -1132,7 +1132,7 @@ EggifiedOp* Egglog::eggifyValue(mlir::Value value) {
 // feeding an opaque llhd.combinational's cf.br block-arg operand) are kept
 // verbatim by the opaque passthrough; recording the opaque user makes
 // shouldBeExtracted() leave them unextracted, so the positional extraction-line
-// pairing in runOnBlock stays aligned (fixes the opaque_capture cf.br i1->i4 desync).
+// pairing in runOnBlock stays aligned, preserving captured operand types.
 void Egglog::registerOpaqueRegionCaptures(mlir::Operation* op, EggifiedOp* opaqueUser) {
     if (op->getNumRegions() == 0) {
         return;
@@ -1150,8 +1150,7 @@ void Egglog::registerOpaqueRegionCaptures(mlir::Operation* op, EggifiedOp* opaqu
         }
     };
     // Visit every nested op at any depth; getOperands() includes cf.br /
-    // cf.cond_br block-successor (block-arg) operands, which is exactly the
-    // opaque_capture path (the i1 %false_0 fed as a cf.br ^bb1 block-arg operand).
+    // Branch successor operands also capture values from the enclosing scope.
     op->walk([&](mlir::Operation* nested) {
         if (nested == op) return;
         for (mlir::Value operand : nested->getOperands()) {
@@ -1203,9 +1202,8 @@ EggifiedOp* Egglog::eggifyOperation(mlir::Operation* op) {
     // Wide-constant guard: the egglog IntegerAttr constructor holds only an
     // i64 ((function IntegerAttr (i64 Type) Attr) in base.egg), and
     // IntegerAttr::getInt() asserts in APInt::getSExtValue() when the value
-    // needs more than 64 significant bits. Large designs (e.g. design accumulator,
-    // with 512-bit RAM data buses / wide concat masks) carry such constants;
-    // eggifying them would crash. Route any op carrying a >64-significant-bit
+    // needs more than 64 significant bits. Wide buses and concat masks can
+    // carry such constants. Route any op carrying a >64-significant-bit
     // IntegerAttr through the opaque passthrough so the original MLIR op
     // survives reconstruction verbatim (same mechanism used for llhd.process).
     for (const mlir::NamedAttribute& na : op->getAttrs()) {

@@ -11,6 +11,48 @@ from cedar.egraph import pipeline
 from cedar.verification import check
 
 
+def test_data_observing_process_does_not_gain_register(tmp_path, toolchain):
+    """A module clock must not turn an unrelated combinational wait into a flop."""
+    source = tmp_path / "mixed_process.mlir"
+    source.write_text("""module {
+  hw.module @mixed_process(in %clk_in : i1, in %a : i4, in %b : i4, out y : i4) {
+    %zero = hw.constant 0 : i4
+    %false = hw.constant false
+    %true = hw.constant true
+    %time = llhd.constant_time <0ns, 0d, 1e>
+    %clock = seq.to_clock %clk_in
+    %registered = seq.firreg %a clock %clock : i4
+    %signal = llhd.sig %zero : i4
+    %process:2 = llhd.process -> i4, i1 {
+      cf.br ^wait(%zero, %false : i4, i1)
+    ^wait(%value: i4, %enable: i1):
+      llhd.wait yield (%value, %enable : i4, i1), (%registered, %b : i4, i4), ^body
+    ^body:
+      %less = comb.icmp ult %registered, %b : i4
+      cf.cond_br %less, ^left, ^right
+    ^left:
+      cf.br ^wait(%registered, %true : i4, i1)
+    ^right:
+      cf.br ^wait(%b, %true : i4, i1)
+    }
+    llhd.drv %signal, %process#0 after %time if %process#1 : i4
+    %output = llhd.prb %signal : i4
+    hw.output %output : i4
+  }
+}
+""")
+    result = subprocess.run(
+        [str(toolchain.tool("egg-opt")), str(source),
+         "--pass-pipeline=builtin.module(hw.module(lower-loop-carry-processes{lower-llhd-delay-as-zero-cycle=true}))"],
+        cwd=tmp_path, env=toolchain.env(), capture_output=True, text=True,
+        check=True, timeout=30,
+    )
+    assert result.stdout.count("seq.firreg") == 1
+    assert "comb.mux" in result.stdout and "comb.icmp ult" in result.stdout
+    for removed in ("llhd.process", "llhd.wait", "llhd.drv", "llhd.prb", "cf.br", "cf.cond_br"):
+        assert removed not in result.stdout
+
+
 def test_opaque_region_captures_preserve_branch_types(tmp_path, toolchain):
     """Captured constants must not shift positional reconstruction roots."""
     source = tmp_path / "opaque_capture.mlir"

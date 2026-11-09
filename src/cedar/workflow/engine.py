@@ -670,7 +670,9 @@ class Run:
         dd = self.design.data
         return pipeline.eqsat(self.tc, self.dir / "egraph" / name, self.s["top"], self.s["rtl"], self.s["top"],
                               rules, iterations, self.settings["eqsat_timeout_s"],
-                              [i["path"] for i in dd.get("include_dirs") or []], dd.get("defines") or {})
+                              [i["path"] for i in dd.get("include_dirs") or []], dd.get("defines") or {},
+                              hierarchical=self.settings.get("hierarchical", False),
+                              opaque_modules=self.settings.get("opaque_modules", []))
 
     def phase_analysis(self) -> str:
         eq = self._eqsat("analysis", [], 1)

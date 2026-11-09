@@ -164,6 +164,9 @@ def load_design(path: str) -> Loaded:
     obj = data.get("objective") or {}
     if not obj.get("preset") and not obj.get("weights"):
         errs.append("objective: choose a preset or explicit weights (area/delay/power)")
+    search = data.get("search") or {}
+    if search.get("opaque_modules") and not search.get("hierarchical"):
+        errs.append("search.opaque_modules requires search.hierarchical: true")
     if errs:
         raise ConfigError(errs, str(d.path))
     return d

@@ -200,6 +200,9 @@ DESIGN = {
                                "every resume (quick: 3600, paper: 172800). When it expires, running tool "
                                "processes are terminated and the run ends as failed; it cannot complete."),
         "allow_latency_change": F("bool", default=False, doc="permit pipeline/retiming rewrites (off: no-retiming mode)"),
+        "hierarchical": F("bool", default=False, doc="optimize module bodies independently while preserving hierarchy"),
+        "opaque_modules": F("list", item=F("str"), default=[],
+                            doc="exact module symbols excluded from optimization; requires hierarchical search"),
         "seed_rules": F("bool", default=True, doc="include Cedar's shipped seed rule library in the rule pool"),
     }),
     "agent": F("obj", fields={

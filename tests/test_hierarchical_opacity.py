@@ -71,6 +71,10 @@ def test_module_opacity_is_explicit(tmp_path, toolchain, flags, marker, opaque):
     (["--opaque-module=custom_cell"], "", False, "requires --hierarchical"),
     ([], "attributes {cedar.blackbox = false}", True, "must be a unit attribute"),
     ([], "attributes {cedar.blackbox}", False, "requires --hierarchical"),
+    (["--opt-module=missing"], "", False, "does not name an internal HW module"),
+    (["--opt-module=memory_macro"], "", False, "does not name an internal HW module"),
+    (["--opt-module=custom_cell"], "attributes {cedar.blackbox}", False, "cannot optimize a cedar.blackbox"),
+    (["--opt-module=custom_cell"], "", True, "cannot be combined"),
 ])
 def test_invalid_opacity_configuration_fails(tmp_path, toolchain, flags, marker,
                                             hierarchical, message):

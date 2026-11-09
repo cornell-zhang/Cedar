@@ -29,10 +29,10 @@ part of the repository.
 
 | Environment | Result |
 | --- | --- |
-| repository checkout (editable install, Python 3.13), container-built toolchain prefix | 50 passed |
+| repository checkout (editable install, Python 3.13), container-built toolchain prefix | 60 passed |
 | repository checkout, toolchain prefix built natively from the source bundle | passed (see build section) |
-| fresh venv from the final wheels (Python 3.11, toolchain from the `cedar-toolchain` wheel), tests from the sdist | 49 passed, 1 skipped (example templates need the checkout) |
-| fresh venv in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28, Python 3.9), final wheels | 49 passed, 1 skipped; `cedar example open` passes |
+| fresh venv from the final wheels (Python 3.11, toolchain from the `cedar-toolchain` wheel), tests from the sdist | 59 passed, 1 skipped (example templates need the checkout) |
+| fresh venv in the manylinux_2_28 container (AlmaLinux 8, glibc 2.28, Python 3.9), final wheels | 59 passed, 1 skipped |
 
 Toolchain-dependent tests run the real binaries: the weighted cost model must
 flip the real extractor's choice, the extractor must be deterministic on an
@@ -58,22 +58,24 @@ PPA of every verified candidate, frontier report. Profiles and run
 directories were outside the repository; profiles were created through the
 guided setup.
 
-**Release-commit runs** (final wheels in a fresh environment; plugins loaded
-from a clean export of the release commit):
+**Release runs** (after the second review's gate fixes; final wheels in a
+fresh environment; plugins loaded from a clean export of the release commit):
 
 | Host | Run wall clock | Agent session | Result |
 | --- | --- | --- | --- |
-| Claude Code (`--plugin-dir`) | 5 min 06 s | 5 min 22 s | completed, contract met; extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met |
-| Codex (installed plugin) | 6 min 26 s | 7 min 09 s | completed, contract met; identical extracted result (deterministic extraction); the agent's rule was proved at 1 and 8 bits, hit the 60 s Z3 budget at 16 bits and was rejected there |
+| Claude Code (`--plugin-dir`) | 6 min 58 s | 7 min 23 s | completed, contract met, iteration successful (verified + completely measured); extracted candidate Conformal PASS: area -38.3%, power -30.3%, delay +2.6%, timing met; agent rule proved at 1/8/16 bits; the agent spent 132 s on the rule-proposal task |
+| Codex (installed plugin) | 5 min 59 s | 6 min 53 s | completed, contract met; identical extracted result (deterministic extraction); agent rule proved at 1/8/16 bits |
+| Negative check (wrong direct rewrite, agent role played manually) | — | — | Conformal exit 16, 15 non-equivalent points -> candidate `failed`, excluded, never measured |
 
-Both runs measured the same baseline (893.7 um2, 0.661 ns, 229.6 uW) and the
-same extracted candidate (551.5 um2, 0.678 ns, 160.1 uW). Phase times of the
-Claude run: baseline 100 s, direct-candidate verification + synthesis preview
-40 s, e-graph iteration incl. verification and parallel full-PPA measurement of
-both candidates 134 s, agent tasks 11 s and 15 s. A first Claude run of the
-same commit took 10 min 02 s because P&R ran 240-259 s (instead of ~76 s)
-while a 24-job native LLVM build and another user's Innovus job shared the
-machine — the target assumes a reasonably idle host and licenses.
+Both host runs measured the same baseline (893.7 um2, 0.661 ns, 229.6 uW) and
+the same extracted candidate (551.5 um2, 0.678 ns, 160.1 uW). Phase times of
+the Codex run: baseline ~100 s, direct-candidate verification + synthesis
+preview ~40 s, e-graph iteration incl. verification and parallel full-PPA
+measurement of both candidates ~130 s; agent tasks 33 s and 42 s. Before the
+gate fixes the same flow measured 5 min 06 s (Claude) and 6 min 26 s (Codex);
+one Claude run took 10 min 02 s while a 24-job native LLVM build and another
+user's Innovus job shared the machine (P&R 240-259 s instead of ~76 s) — the
+<= 10 min target assumes a reasonably idle host and available licenses.
 
 **Earlier runs during development** (same flow, earlier package revisions):
 Claude Code with an editable install (5 min 04 s), Codex with seed rules
@@ -116,6 +118,25 @@ differences in extraction were traced to nondeterministic hashing in
 extraction-gym and fixed (see `third_party/extraction-gym/UPSTREAM.md`); the
 toolchain was rebuilt from scratch afterwards (container build: LLVM 657 s,
 CIRCT 196 s).
+
+## Second review: admission and measurement gates
+
+A second independent review reproduced four further gate failures, all fixed
+with regression tests before the release runs above:
+
+* a rule file could carry extra egglog commands or actions (a top-level
+  `union` of two different constants, or a `set` action next to the proved
+  union) that the certifier ignored; the whole file is now validated and only
+  the canonical re-serialization of the single validated rule reaches egglog
+  (regression executes the real egglog binary);
+* an iteration whose candidate failed measurement still counted as successful
+  for the execution contract; one predicate (verified and completely,
+  comparably measured) now drives budgets, diversity, stopping and the report;
+* resuming a run did not detect a changed user SDC or included header; runs now
+  fingerprint all behaviour/constraint inputs and recompute the constraints id;
+* a Conformal process failure with a PASS-shaped report (or a stale report from
+  an earlier attempt) could be accepted; passes now require a successful
+  process and fresh reports, and every EDA stage clears old outputs first.
 
 ## Known limitations
 

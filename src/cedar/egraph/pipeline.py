@@ -129,14 +129,23 @@ def build_program(tc: Toolchain, rules: Sequence[str], iterations: Optional[int]
     return text
 
 
-_TYPE_RE = re.compile(r"\((I(\d+))\)|\(Int (\d+)\)")
+_TYPE_RE = re.compile(r"\((I(\d+))\)|\((?:Int|SInt|UInt) (\d+)\)")
+_NON_SIGNLESS_RE = re.compile(r"\((SInt|UInt|OtherInt|F16|F32|F64|F80|F128|TF32|Index|Complex|Tuple|Function|"
+                              r"Vector|RankedTensor|UnrankedTensor|OpaqueType)\b")
 
 
 def widths_in(text: str) -> List[int]:
+    """Bit widths of integer types (signless, signed and unsigned) in an e-graph program."""
     ws = set()
     for m in _TYPE_RE.finditer(text):
         ws.add(int(m.group(2) or m.group(3)))
     return sorted(ws)
+
+
+def non_signless_types_in(text: str) -> List[str]:
+    """Type constructors other than signless integers. Certified rules only
+    mention signless integer types, so they never match e-nodes of these."""
+    return sorted(set(_NON_SIGNLESS_RE.findall(text)))
 
 
 def frontend(tc: Toolchain, rtl: Sequence[str], top: str, out_mlir: Path, work: Path,

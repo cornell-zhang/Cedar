@@ -161,6 +161,36 @@ def _forbidden_heads(expr) -> List[str]:
     return found
 
 
+# The proof model is exact only for signless integer types (CIRCT comb/hw).
+_SIGNLESS = ("I1", "I4", "I8", "I16", "I32", "I64")
+
+
+def unsupported_types(form) -> List[str]:
+    """Type terms the proof model cannot represent exactly.
+
+    Every term built with a Type constructor of the base template must be a
+    signless integer, ``(I1|I4|I8|I16|I32|I64)`` or ``(Int N)`` with N >= 1;
+    signed/unsigned (``SInt``/``UInt``), floating, index, aggregate, opaque and
+    computed (``type-of``) types are rejected rather than modeled with a
+    default width. Type variables are allowed (specialized to signless types).
+    """
+    bad: List[str] = []
+
+    def visit(e):
+        if not (isinstance(e, list) and e and isinstance(e[0], str)):
+            return
+        hs = _BASE_SORTS.get(e[0])
+        if not hs or hs[1] != "Type":
+            return
+        if e[0] in _SIGNLESS and len(e) == 1:
+            return
+        if e[0] == "Int" and len(e) == 2 and isinstance(e[1], int) and not isinstance(e[1], bool) and e[1] >= 1:
+            return
+        bad.append(zv.sexp_to_str(e)[:60])
+    _walk(form, visit)
+    return sorted(set(bad))
+
+
 def validate_rule_text(rule_text: str) -> Tuple[Optional[list], str]:
     """Validate the *entire* executable content of a rule file.
 
@@ -229,12 +259,16 @@ def validate_rule_text(rule_text: str) -> Tuple[Optional[list], str]:
         return None, "the rule must declare :ruleset rules"
     if ":name" in seen and not (isinstance(seen[":name"], str) and seen[":name"].startswith('"')):
         return None, ":name must be a string"
+    types = unsupported_types(form)
+    if types:
+        return None, (f"unsupported type(s) {types}: the proof model is exact only for signless integer types "
+                      "(I1/I4/I8/I16/I32/I64, (Int N)) and never assumes a width for other types")
     return form, ""
 
 
 # Bumped whenever admission semantics change; part of every certificate's
 # verifier identity (together with the source hashes of this module and z3verify).
-CERT_SEMANTICS = "operand-sorts-v4"
+CERT_SEMANTICS = "signless-types-v5"
 _PAT_PREFIX = "?cv"          # pattern variables  -> ?cv1, ?cv2, ...
 _LET_PREFIX = "cedar_let_"   # let-bound names    -> cedar_let_1, ...
 
@@ -485,7 +519,10 @@ def prove_instance(rule_name: str, rule_text: str, width: int, sigs: Dict[str, L
     if arity:
         return cert("UNSUPPORTED", "operand vector(s) without one exact (= N (vec-length ?v)) guard, or "
                     f"read out of the guarded bounds: {arity}", inst)
-    unguarded = _unguarded_operands(parsed, sigs, inst)
+    try:
+        unguarded = _unguarded_operands(parsed, sigs, inst)
+    except zv.UnsupportedType as exc:          # defense in depth behind validate_rule_text
+        return cert("UNSUPPORTED", str(exc), inst)
     if unguarded:
         return cert("UNSUPPORTED", f"operand width not fixed by the match premises: {unguarded}", inst)
     try:
@@ -615,7 +652,9 @@ def operand_sorts(form: list, sigs: Dict[str, List[str]]) -> Tuple[Dict[str, set
             if hs is None:
                 problems.append(f"unknown constructor {h!r}")
                 return
-            args, _ = hs
+            args, res = hs
+            if expected and not expected.startswith("Vec") and _norm_sort(res) != expected:
+                problems.append(f"{h} builds a {res} where a {expected} is expected")
             if len(args) != len(e) - 1:
                 problems.append(f"{h} expects {len(args)} arguments, got {len(e) - 1}")
             for a, c in zip(args, e[1:]):

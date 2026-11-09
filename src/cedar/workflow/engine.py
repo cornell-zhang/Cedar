@@ -628,7 +628,12 @@ class Run:
         self.s["analysis"] = {"egraph": eq.egraph_json, "ops_egg": eq.ops_egg, "n_nodes": eq.n_nodes,
                               "n_classes": eq.n_classes, "widths": eq.widths, "op_histogram": eq.op_histogram,
                               "scales": costmodel.design_scales(data)}
+        other = pipeline.non_signless_types_in(Path(eq.ops_egg).read_text() if Path(eq.ops_egg).is_file() else "")
+        self.s["analysis"]["non_signless_types"] = other
         self.log(f"analysis e-graph: {eq.n_nodes} nodes, widths {eq.widths}")
+        if other:
+            self.log(f"design has non-signless types {other}: certified rules (signless integers only) "
+                     "never apply to those e-nodes")
         return "next"
 
     def _direct_round(self) -> int:

@@ -78,7 +78,7 @@ def node_width(node: dict, nodes: Mapping[str, dict]) -> Optional[int]:
         op = cn["op"]
         if op.startswith("I") and op[1:].isdigit():
             return int(op[1:])
-        if op == "Int" and cn["children"]:
+        if op in ("Int", "SInt", "UInt") and cn["children"]:
             lit = nodes.get(cn["children"][0], {}).get("op", "")
             if lit.lstrip("-").isdigit():
                 return int(lit)

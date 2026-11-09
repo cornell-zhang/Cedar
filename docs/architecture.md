@@ -50,7 +50,12 @@ either orientation, or an exact guard `(= N (vec-length ?v))`; actions only
 `let` bindings and exactly one `union`; keywords `:ruleset rules` and `:name`)
 or one `rewrite`; any other top-level command, action (`set`, `delete`,
 `panic`, `extract`, a second `union`, ...), keyword (`:when`, `:subsume`) or
-nested command is rejected. Reversed equalities and guards are normalized
+nested command is rejected, and so is every type other than a signless
+integer (`(I1|I4|I8|I16|I32|I64)`, `(Int N)` or a type variable) -- signed,
+unsigned, floating, index, aggregate, opaque and computed (`type-of`) types --
+in data and attribute positions alike: the proof model is exact only for
+signless bit vectors and never assumes a width for another type (the verifier
+also refuses such a type independently). Reversed equalities and guards are normalized
 to that orientation. The validated rule is then alpha-renamed: every
 pattern variable becomes a fresh `?cvN` and every `let` name a fresh
 `cedar_let_N`, so distinct egglog symbols can never be merged by the proof

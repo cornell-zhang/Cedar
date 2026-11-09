@@ -529,10 +529,27 @@ _OP_RESULT_TYPE_AT: Dict[str, int] = {
 # comb_mux's cond (positional 1) is I1.
 
 
+# Type constructors of the base template that are NOT signless bit vectors.
+# The proof model only knows signless integers; any of these in a type slot
+# must stop the proof instead of falling back to a default width.
+UNSUPPORTED_TYPE_HEADS = frozenset({
+    "SInt", "UInt", "OtherInt", "F16", "F32", "F64", "F80", "F128", "TF32", "Index", "None",
+    "Complex", "Tuple", "Function", "Vector", "RankedTensor", "UnrankedTensor", "OpaqueType", "type-of",
+})
+
+
+class UnsupportedType(Exception):
+    pass
+
+
 def _type_of_annotation(expr: Any, env: Optional["TypeEnv"] = None) -> Optional[int]:
     """Return the bitwidth of an `(IN)` or `(Int N)` annotation. If `expr`
     is a `?var` that was resolved as a type-slot variable in `env`, return
-    its inferred width; otherwise None."""
+    its inferred width; otherwise None. A type the proof model cannot
+    represent (signed/unsigned, floating, aggregate, opaque) raises
+    UnsupportedType -- it is never given a default width."""
+    if isinstance(expr, list) and expr and isinstance(expr[0], str) and expr[0] in UNSUPPORTED_TYPE_HEADS:
+        raise UnsupportedType(f"unsupported type {sexp_to_str(expr)}")
     if isinstance(expr, list) and len(expr) == 1 and isinstance(expr[0], str):
         m = re.fullmatch(r"I(\d+)", expr[0])
         if m:

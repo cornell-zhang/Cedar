@@ -371,7 +371,7 @@ def test_certificates_from_older_semantics_are_not_reused(rule, tmp_path, templa
     old.put(forged)                                   # what the previous verifier version recorded
     assert old.get(C.rule_sha(rule), forged.width) is not None
     monkeypatch.setattr(C, "verifier_hash", lambda: real)
-    assert real != "0ld-vector-model" and C.CERT_SEMANTICS == "operand-sorts-v4"
+    assert real != "0ld-vector-model" and C.CERT_SEMANTICS == "signless-types-v5"
     adm = C.admit({"two": rule}, [1, 8], C.CertificateStore(tmp_path, template_sigs), template_sigs)
     assert not adm.admitted and adm.rejected[0].status in ("REFUTED", "UNSUPPORTED")
 
@@ -465,3 +465,80 @@ def test_prompt_let_guidance_matches_the_certifier(template_sigs):
     assert C.prove_instance("ok", base.format(n="s"), 8, template_sigs)[0].status == "PROVED"
     c = C.prove_instance("bad", base.format(n="?s"), 8, template_sigs)[0]
     assert c.status == "REJECTED" and "looks like a pattern variable" in c.detail
+
+
+# --- review regressions: only signless integer types are modeled ---
+
+def _ct(n, t):
+    return f'(hw_constant (NamedAttr "value" (IntegerAttr {n} {t})) {t})'
+
+
+def _const_rule(t):
+    return f"(rewrite {_ct(0, t)} {_ct(2, t)} :ruleset rules)"
+
+
+@pytest.mark.parametrize("t", ["(SInt 8)", "(UInt 8)"])
+def test_signed_unsigned_types_cannot_admit_false_rules(t, tmp_path, toolchain, template_sigs):
+    rule = _const_rule(t)
+    for w in (1, 8):
+        c, _ = C.prove_instance("const", rule, w, template_sigs)
+        assert c.status == "REJECTED" and "unsupported type" in c.detail, (w, c.status, c.detail)
+    adm = C.admit({"const": rule}, [1, 8], None, template_sigs)
+    assert not adm.admitted
+    lhs, rhs = _ct(0, t), _ct(2, t)
+    assert not _egglog_holds(toolchain, tmp_path, [], lhs, rhs, "no_rules")
+    # control: the raw rule really equates the two different constants in egglog ...
+    assert _egglog_holds(toolchain, tmp_path, [rule], lhs, rhs, "control")
+    # ... while nothing admitted does
+    assert not _egglog_holds(toolchain, tmp_path, [i.text for i in adm.admitted], lhs, rhs, "admitted")
+
+
+@pytest.mark.parametrize("t", ["(SInt 8)", "(UInt 8)", "(OtherInt \"x\")", "(F16)", "(F32)", "(F64)", "(F80)",
+                               "(F128)", "(TF32)", "(Index)", "(None)", "(Complex (I8))", "(Tuple (vec-of (I8)))",
+                               "(Function (vec-of (I8)) (vec-of (I8)))", "(Vector (vec-of 4) (I8))",
+                               "(RankedTensor (vec-of 4) (I8))", "(UnrankedTensor (I8))", "(OpaqueType \"a\" \"b\")",
+                               "(Int 0)"])
+def test_every_non_signless_type_is_rejected(t, template_sigs):
+    c, _ = C.prove_instance("const", _const_rule(t), 8, template_sigs)
+    assert c.status == "REJECTED", (t, c.status, c.detail)
+    # also in attribute positions and as a computed type
+    attr = f'(rewrite (hw_constant (NamedAttr "value" (IntegerAttr 0 {t})) (I8)) {_c8(2)} :ruleset rules)'
+    assert C.prove_instance("attr", attr, 8, template_sigs)[0].status == "REJECTED", t
+    tof = "(rewrite (comb_add ?x (vec-of ?y) (type-of ?x)) (comb_add ?y (vec-of ?x) (type-of ?x)) :ruleset rules)"
+    assert C.prove_instance("typeof", tof, 8, template_sigs)[0].status == "REJECTED"
+
+
+def test_verifier_never_defaults_a_width_for_unsupported_types(template_sigs, monkeypatch):
+    # defense in depth: with the admission gate bypassed the proof model itself refuses
+    monkeypatch.setattr(C, "unsupported_types", lambda form: [])
+    for t in ("(SInt 8)", "(UInt 8)", "(F32)"):
+        c, _ = C.prove_instance("const", _const_rule(t), 1, template_sigs)
+        assert c.status != "PROVED", (t, c.status, c.detail)
+
+
+def test_signless_rules_still_prove_and_run(tmp_path, toolchain, template_sigs):
+    i12 = "(Int 12)"
+    zero = _ct(0, i12)
+    rule = f"(rewrite (comb_add ?x (vec-of {zero}) {i12}) ?x :ruleset rules)"
+    c, _ = C.prove_instance("add0", rule, 12, template_sigs)
+    assert c.status == "PROVED", c.detail
+    assert C.prove_instance("const12", _const_rule(i12), 12, template_sigs)[0].status == "REFUTED"
+    assert C.prove_instance("const8", _const_rule("(I8)"), 8, template_sigs)[0].status == "REFUTED"
+    adm = C.admit({"add0": rule}, [12], None, template_sigs)
+    x = _ct(5, i12)
+    lhs = f"(comb_add {x} (vec-of {zero}) {i12})"
+    assert not _egglog_holds(toolchain, tmp_path, [], lhs, x, "no_rules")
+    assert _egglog_holds(toolchain, tmp_path, [i.text for i in adm.admitted], lhs, x, "admitted")
+    assert C.prove_instance("good", GOOD, 8, template_sigs)[0].status == "PROVED"
+
+
+def test_literal_terms_must_have_the_slot_sort(template_sigs):
+    rule = "(rewrite (comb_add ?x (vec-of ?y) (NoAttr)) (comb_add ?y (vec-of ?x) (NoAttr)) :ruleset rules)"
+    assert C.prove_instance("sort", rule, 8, template_sigs)[0].status != "PROVED"
+
+
+def test_pipeline_reads_signed_and_unsigned_widths():
+    from cedar.egraph import pipeline
+    text = "(I8) (Int 12) (SInt 16) (UInt 24) (F32)"
+    assert pipeline.widths_in(text) == [8, 12, 16, 24]
+    assert pipeline.non_signless_types_in(text) == ["F32", "SInt", "UInt"]

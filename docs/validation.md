@@ -312,6 +312,29 @@ tests fail.
   `let` names carry no `?`; the Codex rule from that run proves at 1/8/16
   bits once renamed.
 
+## Eighth review: non-signless types
+
+* The certifier and the verifier recognized only `(I<N>)`/`(Int N)` widths; any
+  other concrete type fell back to a one-bit proof. `hw_constant 0 : SInt 8 ->
+  hw_constant 2 : SInt 8` (and the same with `UInt 8`) was PROVED at width 1
+  and admitted, and its instance equated the two constants in real egglog.
+* Admission now rejects every term built with a Type constructor other than a
+  signless integer (`(I1|I4|I8|I16|I32|I64)`, `(Int N)`, N >= 1) or a type
+  variable -- signed, unsigned, floating, index, aggregate, opaque and computed
+  (`type-of`) types, in data and attribute positions -- before translation, and
+  literal terms must have the sort of their slot. Independently, the verifier
+  raises on such a type instead of assuming a width (`UnsupportedType`), so the
+  rule is not admitted even with the admission check bypassed. The e-graph width
+  scan and the cost model read `SInt`/`UInt` widths, and the analysis records
+  any non-signless types of a design (no certified rule can match them). The
+  certificate semantics version is now `signless-types-v5`.
+* The reviewer's command now exits 1 with both rules REJECTED. Regressions run
+  both false rules through real egglog (raw rule equates the constants; nothing
+  admitted does), reject all 18 non-signless Type constructors and `(Int 0)` in
+  data and attribute positions plus `type-of`, check the verifier alone, and
+  keep valid signless rules (including `(Int 12)`) proving and running. The seed
+  rules and the final host runs' agent rules still prove.
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.

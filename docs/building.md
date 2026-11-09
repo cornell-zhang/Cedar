@@ -18,7 +18,7 @@ LLVM or egglog. `python3 toolchain/scripts/lock.py check` validates the lockfile
 
 ## Native build
 
-Prerequisites: git, cmake >= 3.28, ninja >= 1.11, GCC >= 12 (or clang >= 16),
+Prerequisites: git, python >= 3.8, cmake >= 3.28, ninja >= 1.11, GCC >= 12 (or clang >= 16),
 clang (for DialEgg), lld, python3, Rust (cargo; rustup recommended so egglog's
 `rust-toolchain.toml` can select 1.74). Resources: ~45 GB disk for the build
 tree, ~2 GB RAM per compile job and ~8 GB per concurrent LLVM link.

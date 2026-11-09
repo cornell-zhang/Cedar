@@ -83,9 +83,14 @@ def check(spec: Dict[str, F], data: Any, base: Path, where: str = "") -> (Dict[s
             elif f.default is not None:
                 out[key] = _copy(f.default)
             elif f.kind == "obj" and f.fields is not None:
-                sub, errs = check(f.fields, {}, base, here)
-                out[key] = sub
-                errors += errs
+                # An absent optional object is only materialized (with its
+                # defaults) if it has no required members; otherwise it stays
+                # unset so that e.g. an unconfigured tool stage is not mistaken
+                # for a configured one.
+                if not any(sf.required for sf in f.fields.values()):
+                    sub, errs = check(f.fields, {}, base, here)
+                    out[key] = sub
+                    errors += errs
             continue
         val, errs = _check_value(f, data[key], base, here)
         out[key] = val

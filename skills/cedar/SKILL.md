@@ -31,6 +31,13 @@ cedar run start --design <design.yaml> --work-dir <dir> \
 The command runs deterministic phases and stops with exit code 3 when a task needs
 you, printing the task file. `cedar run status --run <run>` shows progress.
 
+Long-running commands: `cedar run start` and `cedar run continue` run EDA tools and can
+take several minutes (the baseline alone is a full synthesis + P&R + power run). If
+your shell tool has a short timeout, run them in the background with output to a log
+file and poll `cedar run status --run <run>` every 20-30 s. Never start a second run
+for the same design because a command was interrupted: resume the existing run with
+`cedar run continue --run <run>` (a run directory is locked while it is advancing).
+
 ## 2. Task loop
 Repeat until the run is `completed` or `incomplete` (or fails):
 1. Read the task file printed by the CLI (`cedar task show --run <run>` reprints it).

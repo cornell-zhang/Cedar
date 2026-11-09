@@ -207,7 +207,27 @@ class Run:
 
     def advance(self, agent_cmd: Optional[str] = None, agent_label: Optional[Dict[str, str]] = None,
                 stop_after: Optional[str] = None) -> str:
-        """Run phases until done, failure, or an agent task is pending."""
+        """Run phases until done, failure, or an agent task is pending.
+
+        Holds an exclusive lock on the run directory so two processes can never
+        advance the same run concurrently.
+        """
+        import fcntl
+        lock = open(self.dir / ".lock", "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            lock.close()
+            raise WorkflowError(f"run {self.dir} is already being advanced by another process; "
+                                "poll `cedar run status` instead")
+        try:
+            return self._advance(agent_cmd, agent_label, stop_after)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            lock.close()
+
+    def _advance(self, agent_cmd: Optional[str], agent_label: Optional[Dict[str, str]],
+                 stop_after: Optional[str]) -> str:
         while True:
             phase = self.s["phase"]
             if phase == "done":

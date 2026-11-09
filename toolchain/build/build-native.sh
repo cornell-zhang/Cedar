@@ -30,7 +30,7 @@
 #   CC_DIALEGG/CXX_DIALEGG compilers for DialEgg (default: clang/clang++)
 #   CEDAR_MARCH        -march baseline (default from lock: x86-64-v2)
 #
-# Requirements: git, cmake >= 3.28, ninja >= 1.11, a C++17/20 compiler
+# Requirements: git, python3 >= 3.8, cmake >= 3.28, ninja >= 1.11, a C++17/20 compiler
 # (GCC >= 12 or clang >= 16), lld, python3, rustup/cargo.
 
 set -euo pipefail

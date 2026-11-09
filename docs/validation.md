@@ -185,6 +185,29 @@ with regression tests before the release runs above:
   check pass; nothing admitted does), and prove and execute valid zero-length,
   two-element and reversed-premise distributivity rules.
 
+## Fifth review: widths of nested data operands
+
+* The operand-width check exempted every symbol nested beneath an `OpVec`
+  argument or the first element of a `vec-of`/`vec-push`, so data operands
+  inside vector literals were never width-checked. A false rule was PROVED at
+  1 bit and admitted: `icmp ne(?a, ?b) : I1 -> 0 ^ a[0] ^ b[0]` with the
+  extracts inside `vec-of` (false for 8-bit `a = 0, b = 2`); its certified
+  instance equated unequal ground terms in real egglog.
+* Variables are now classified by their egglog sort, inferred from the
+  declared constructor signatures (circt.egg operations; the pinned base.egg
+  types, attributes and attribute pairs; the builtin vector functions), never
+  by nesting. Every `Op`-sorted operand, wherever it occurs, must get its width
+  from the match premises alone, and the proof must model it at that width;
+  operand vectors with elements need a premise-fixed element width. Unknown
+  constructors, ambiguous sorts and unclassifiable variables are rejected.
+* The certificate semantics version is now `operand-sorts-v4`; earlier
+  certificates and recorded run instances are re-proved instead of reused.
+* Regressions run the reviewer's rule and a premise-side variant (an
+  unconstrained operand inside a matched vector literal) through real egglog
+  (raw rule equates unequal terms; nothing admitted does); a valid rule with a
+  premise-fixed operand nested in `vec-of` still proves and runs, and a test
+  pins the declared sorts against the toolchain templates.
+
 ## Known limitations
 
 * Linux x86-64 only; macOS, ARM and Windows are untested.

@@ -67,8 +67,13 @@ operand vector must have exactly one `(= N (vec-length ?v))` guard and the
 verifier models it as exactly N elements (N = 0 included; never sized from the
 indices read), every `vec-get` index must be a literal in `[0, N)`, vector
 shapes the model does not represent (`vec-push` onto a matched vector,
-`comb_concat` over a matched non-empty vector) are unsupported, every operand width
-must be determined by the instance types, and widths above `max_width` (256)
+`comb_concat` over a matched non-empty vector) are unsupported. Every variable
+is classified by its egglog sort, inferred from the declared constructor
+signatures (never from where it is nested), and every `Op`-sorted data
+operand -- including operands inside `vec-of`/`vec-push` literals, attribute
+or type arguments and the right-hand side -- must get its width from the match
+premises alone, with the proof using that same width; unknown constructors
+and unclassifiable variables are rejected. Widths above `max_width` (256)
 are unsupported. Certificates are keyed by the SHA-256 of the rule text, the
 width and a hash of the verifier code, the admission-semantics version and
 the Z3 version; any change forces a new proof. Within a run, instances are

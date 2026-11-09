@@ -360,16 +360,97 @@ def test_unsupported_vector_and_premise_shapes_fail_closed(template_sigs):
         assert not C.admit({name: rule}, [8], None, template_sigs).admitted
 
 
-def test_certificates_from_older_semantics_are_not_reused(tmp_path, template_sigs, monkeypatch):
-    rule = _VECTOR_CASES["two_elements_reversed_read"][0]
+@pytest.mark.parametrize("rule", ["vector", "nested_width"])
+def test_certificates_from_older_semantics_are_not_reused(rule, tmp_path, template_sigs, monkeypatch):
+    rule = {"vector": _VECTOR_CASES["two_elements_reversed_read"][0], "nested_width": _ICMP_XOR}[rule]
     real = C.verifier_hash()
     monkeypatch.setattr(C, "verifier_hash", lambda: "0ld-vector-model")
     old = C.CertificateStore(tmp_path, template_sigs)
-    c, inst = C.prove_instance("two", rule, 8, template_sigs)
+    c, inst = C.prove_instance("two", rule, 8 if rule is not _ICMP_XOR else 1, template_sigs)
     forged = C.Certificate(**{**c.__dict__, "status": "PROVED", "instance_sha256": C.rule_sha(inst or rule)})
     old.put(forged)                                   # what the previous verifier version recorded
-    assert old.get(C.rule_sha(rule), 8) is not None
+    assert old.get(C.rule_sha(rule), forged.width) is not None
     monkeypatch.setattr(C, "verifier_hash", lambda: real)
-    assert real != "0ld-vector-model" and C.CERT_SEMANTICS == "vector-lengths-v3"
-    adm = C.admit({"two": rule}, [8], C.CertificateStore(tmp_path, template_sigs), template_sigs)
-    assert not adm.admitted and adm.rejected[0].status == "REFUTED"
+    assert real != "0ld-vector-model" and C.CERT_SEMANTICS == "operand-sorts-v4"
+    adm = C.admit({"two": rule}, [1, 8], C.CertificateStore(tmp_path, template_sigs), template_sigs)
+    assert not adm.admitted and adm.rejected[0].status in ("REFUTED", "UNSUPPORTED")
+
+
+# --- review regressions: data operands nested in containers need a matched width ---
+
+def _c(n, w):
+    return f'(hw_constant (NamedAttr "value" (IntegerAttr {n} (I{w}))) (I{w}))'
+
+
+_LOW0 = '(NamedAttr "lowBit" (IntegerAttr 0 (I32)))'
+_NE = '(NamedAttr "predicate" (IntegerAttr 1 (I64)))'
+# icmp ne(a, b) -> 0 ^ a[0] ^ b[0], extracts inside vec-of; a, b have no matched width
+_ICMP_XOR = (f"(rule ((= ?l (comb_icmp ?a ?b {_NE} (I1)))) "
+             f"((union ?l (comb_xor {_c(0, 1)} (vec-of (comb_extract ?a {_LOW0} (I1)) "
+             f"(comb_extract ?b {_LOW0} (I1))) (I1)))) :ruleset rules)")
+
+_NESTED_WIDTH_CASES = {
+    # reviewer counterexample: 8-bit a=0, b=2 -> ne is 1, the replacement is 0
+    "icmp_xor_in_vec_of": (_ICMP_XOR, [1, 8],
+                           f"(comb_icmp {_c(0, 8)} {_c(2, 8)} {_NE} (I1))",
+                           f"(comb_xor {_c(0, 1)} (vec-of (comb_extract {_c(0, 8)} {_LOW0} (I1)) "
+                           f"(comb_extract {_c(2, 8)} {_LOW0} (I1))) (I1))"),
+    # operand nested in a matched OpVec literal: x + a[7:0] -> x + a, a of any width
+    "extract_in_premise_vector": ("(rule ((= ?l (comb_add ?x (vec-of (comb_extract ?a " + _LOW0 + " ?t)) ?t))) "
+                                  "((union ?l (comb_add ?x (vec-of ?a) ?t))) :ruleset rules)", [8],
+                                  f"(comb_add {_c(1, 8)} (vec-of (comb_extract {_c(259, 16)} {_LOW0} (I8))) (I8))",
+                                  f"(comb_add {_c(1, 8)} (vec-of {_c(259, 16)}) (I8))"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(_NESTED_WIDTH_CASES))
+def test_nested_operands_need_matched_widths(case, tmp_path, toolchain, template_sigs):
+    rule, widths, lhs, rhs = _NESTED_WIDTH_CASES[case]
+    for w in widths:
+        c, _ = C.prove_instance(case, rule, w, template_sigs)
+        assert c.status != "PROVED", (case, w, c.detail)
+    adm = C.admit({case: rule}, widths, None, template_sigs)
+    assert not adm.admitted, adm.summary()
+    assert not _egglog_holds(toolchain, tmp_path, [], lhs, rhs, "no_rules")
+    # control: the raw rule really equates the unequal ground terms in egglog ...
+    assert _egglog_holds(toolchain, tmp_path, [rule], lhs, rhs, "control")
+    # ... while nothing admitted does
+    assert not _egglog_holds(toolchain, tmp_path, [i.text for i in adm.admitted], lhs, rhs, "admitted")
+
+
+def test_nested_operands_with_matched_widths_still_prove(tmp_path, toolchain, template_sigs):
+    # (x & y)[0] -> x[0] & y[0]: x, y widths fixed by the matched comb_and; y nested in vec-of on the RHS
+    rule = (f"(rule ((= ?l (comb_extract ?a {_LOW0} (I1))) (= ?a (comb_and ?x ?v ?t)) (= 1 (vec-length ?v)) "
+            f"(= ?y (vec-get ?v 0))) ((union ?l (comb_and (comb_extract ?x {_LOW0} (I1)) "
+            f"(vec-of (comb_extract ?y {_LOW0} (I1))) (I1)))) :ruleset rules)")
+    for w in (8, 16):
+        c, _ = C.prove_instance("and_bit0", rule, w, template_sigs)
+        assert c.status == "PROVED", (w, c.detail)
+    adm = C.admit({"and_bit0": rule}, [8], None, template_sigs)
+    lhs = f"(comb_extract (comb_and {_c(6, 8)} (vec-of {_c(3, 8)}) (I8)) {_LOW0} (I1))"
+    rhs = (f"(comb_and (comb_extract {_c(6, 8)} {_LOW0} (I1)) "
+           f"(vec-of (comb_extract {_c(3, 8)} {_LOW0} (I1))) (I1))")
+    assert not _egglog_holds(toolchain, tmp_path, [], lhs, rhs, "no_rules")
+    assert _egglog_holds(toolchain, tmp_path, [i.text for i in adm.admitted], lhs, rhs, "admitted")
+
+
+def test_operand_sorts_follow_declarations(toolchain, template_sigs):
+    import re as _re
+    # every circt.egg function returns Op (operand_sorts relies on it; base.egg sorts are tabled)
+    decls = _re.findall(r"\(function\s+(\S+)\s+\(([^()]*)\)\s+(\S+)\)",
+                        toolchain.template("circt.egg").read_text())
+    assert decls and all(res == "Op" for _, _, res in decls)
+    base = toolchain.template("base.egg").read_text()
+    fdecl = {n: (tuple(a.split()), r) for n, a, r in _re.findall(r"\(function\s+(\S+)\s+\(([^()]*)\)\s+(\S+)\)", base)}
+    ctors = {"NamedAttr": "(NamedAttr String Attr)", "ValueAttr": "(ValueAttr Attr)", "Value": "(Value i64 Type)",
+             "OpaqueOp": "(OpaqueOp i64 TypeVec)", "NoOp": "(NoOp)"}
+    for name, sig in C._BASE_SORTS.items():
+        if name in ctors:
+            assert ctors[name] in base, name
+        else:
+            assert fdecl.get(name) == sig, (name, fdecl.get(name), sig)
+    form = C._rule_form(_ICMP_XOR)
+    sorts, problems = C.operand_sorts(form, template_sigs)
+    assert not problems and sorts["?a"] == {"Op"} and sorts["?b"] == {"Op"}
+    unknown = "(rule ((= ?l (comb_add ?a ?v (I8))) (= 0 (vec-length ?v))) ((union ?l (mystery ?a))) :ruleset rules)"
+    assert C.prove_instance("unknown", unknown, 8, template_sigs)[0].status != "PROVED"

@@ -61,7 +61,9 @@ Task kinds and what matters:
   `(= N (vec-length ?ops))` with N its exact operand count (0 allowed) and read
   only literal indices below N; write every premise as `(= ?var term)` or a
   length guard (to equate two terms, bind both to one shared variable; other
-  premise shapes are rejected); only `let` and one
+  premise shapes are rejected); every operand's width must follow from the
+  premises (an operand seen only through `comb_extract`/`comb_icmp` or the
+  right-hand side has no fixed width and is rejected); only `let` and one
   `union` actions; no stateful ops. Cedar proves each rule with Z3 at
   every exact width it is applied to and rejects anything unproved.
 - **select_rules** (paper preset) — choose a complementary rule combination and

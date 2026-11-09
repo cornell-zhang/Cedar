@@ -234,7 +234,7 @@ def validate_rule_text(rule_text: str) -> Tuple[Optional[list], str]:
 
 # Bumped whenever admission semantics change; part of every certificate's
 # verifier identity (together with the source hashes of this module and z3verify).
-CERT_SEMANTICS = "vector-lengths-v3"
+CERT_SEMANTICS = "operand-sorts-v4"
 _PAT_PREFIX = "?cv"          # pattern variables  -> ?cv1, ?cv2, ...
 _LET_PREFIX = "cedar_let_"   # let-bound names    -> cedar_let_1, ...
 
@@ -487,7 +487,7 @@ def prove_instance(rule_name: str, rule_text: str, width: int, sigs: Dict[str, L
                     f"read out of the guarded bounds: {arity}", inst)
     unguarded = _unguarded_operands(parsed, sigs, inst)
     if unguarded:
-        return cert("UNSUPPORTED", f"operand width not fixed by the instance types: {unguarded}", inst)
+        return cert("UNSUPPORTED", f"operand width not fixed by the match premises: {unguarded}", inst)
     try:
         status, detail = zv.verify_rule(parsed, sweep=[width], timeout_ms=timeout_ms)
     except Exception as exc:  # noqa: BLE001
@@ -509,60 +509,232 @@ def _rule_form(rule_text: str):
     return next((f for f in forms if isinstance(f, list) and f and f[0] in ("rule", "rewrite")), None)
 
 
+# Sorts of the base-template constructors (base.egg, pinned with the toolchain):
+# name -> (argument sorts, result sort). Every function declared in circt.egg
+# (the ``sigs``) returns ``Op``.
+_TYPE0 = ("I1", "I4", "I8", "I16", "I32", "I64", "F16", "F32", "F64", "F80", "F128", "TF32", "Index", "None")
+_BASE_SORTS: Dict[str, Tuple[Tuple[str, ...], str]] = {
+    **{t: ((), "Type") for t in _TYPE0},
+    "Int": (("i64",), "Type"), "SInt": (("i64",), "Type"), "UInt": (("i64",), "Type"),
+    "OtherInt": (("String",), "Type"), "Complex": (("Type",), "Type"), "Tuple": (("TypeVec",), "Type"),
+    "Function": (("TypeVec", "TypeVec"), "Type"), "Vector": (("IntVec", "Type"), "Type"),
+    "RankedTensor": (("IntVec", "Type"), "Type"), "UnrankedTensor": (("Type",), "Type"),
+    "OpaqueType": (("String", "String"), "Type"),
+    "NoAttr": ((), "Attr"), "IntegerAttr": (("i64", "Type"), "Attr"), "FloatAttr": (("f64", "Type"), "Attr"),
+    "StringAttr": (("String",), "Attr"), "UnitAttr": ((), "Attr"), "TypeAttr": (("Type",), "Attr"),
+    "ArrayAttr": (("AttrVec",), "Attr"), "DenseIntArrayAttr": (("i64", "IntVec", "Type"), "Attr"),
+    "DenseFloatArrayAttr": (("f64", "FloatVec", "Type"), "Attr"),
+    "DenseIntElementsAttr": (("IntVec", "Type"), "Attr"), "DenseFPElementsAttr": (("FloatVec", "Type"), "Attr"),
+    "SymbolRefAttr": (("String",), "Attr"), "OpaqueAttr": (("String", "String"), "Attr"),
+    "NamedAttr": (("String", "Attr"), "AttrPair"), "ValueAttr": (("Attr",), "AttrPair"),
+    "Value": (("i64", "Type"), "Op"), "OpaqueOp": (("i64", "TypeVec"), "Op"), "NoOp": ((), "Op"),
+    "type-of": (("Op",), "Type"),
+}
+_VEC_SORTS = {"OpVec": "Op", "AttrPairVec": "AttrPair", "TypeVec": "Type", "AttrVec": "Attr",
+              "IntVec": "i64", "FloatVec": "f64", "BlockVec": "Block", "RegionVec": "Region"}
+
+
+def _norm_sort(sort: Optional[str]) -> Optional[str]:
+    return f"Vec {_VEC_SORTS[sort]}" if sort in _VEC_SORTS else sort
+
+
+def _head_sorts(head: str, sigs: Dict[str, List[str]]) -> Optional[Tuple[Tuple[str, ...], str]]:
+    if head in _BASE_SORTS:
+        return _BASE_SORTS[head]
+    if head in sigs:
+        return tuple(sigs[head]), "Op"
+    return None
+
+
+def operand_sorts(form: list, sigs: Dict[str, List[str]]) -> Tuple[Dict[str, set], List[str]]:
+    """Egglog sort of every ``?``-variable and ``let`` name of a validated rule.
+
+    Sorts are inferred from the declared constructor signatures (argument and
+    result sorts) and the builtin vector functions; nothing is exempted because
+    of where it is nested. Returns ``(sorts, problems)``: unknown heads are
+    problems, so an unclassifiable rule is never treated as width-checked.
+    """
+    sorts: Dict[str, set] = {}
+    problems: List[str] = []
+
+    def note(name: str, sort: Optional[str]) -> None:
+        if sort is not None:
+            sorts.setdefault(name, set()).add(sort)
+
+    def one(name: str) -> Optional[str]:
+        got = sorts.get(name, set())
+        return next(iter(got)) if len(got) == 1 else None
+
+    def result(e) -> Optional[str]:
+        if isinstance(e, str):
+            return one(e) if e.startswith("?") or e in lets else None
+        if isinstance(e, bool) or isinstance(e, int):
+            return "i64"
+        if isinstance(e, list) and e and isinstance(e[0], str):
+            h = e[0]
+            if h == "vec-get" and len(e) == 3:
+                vs = result(e[1])
+                return vs[4:] if vs and vs.startswith("Vec ") else None
+            if h == "vec-length":
+                return "i64"
+            if h in ("vec-of", "vec-push", "vec-empty"):
+                return None
+            hs = _head_sorts(h, sigs)
+            return _norm_sort(hs[1]) if hs else None
+        return None
+
+    def walk(e, expected: Optional[str]) -> None:
+        if isinstance(e, str):
+            if e.startswith("?") or e in lets:
+                note(e, expected)
+            return
+        if not (isinstance(e, list) and e):
+            return
+        h = e[0]
+        if not isinstance(h, str):
+            problems.append(f"unsupported term {zv.sexp_to_str(e)[:60]}")
+            return
+        elem = expected[4:] if expected and expected.startswith("Vec ") else None
+        if h == "vec-of":
+            for c in e[1:]:
+                walk(c, elem)
+        elif h == "vec-push" and len(e) == 3:
+            walk(e[1], expected)
+            walk(e[2], elem)
+        elif h == "vec-empty" and len(e) == 1:
+            pass
+        elif h == "vec-get" and len(e) == 3:
+            walk(e[1], f"Vec {expected}" if expected else None)
+            walk(e[2], "i64")
+        elif h == "vec-length" and len(e) == 2:
+            walk(e[1], None)
+            if isinstance(e[1], str):
+                vecs_seen.add(e[1])
+        else:
+            hs = _head_sorts(h, sigs)
+            if hs is None:
+                problems.append(f"unknown constructor {h!r}")
+                return
+            args, _ = hs
+            if len(args) != len(e) - 1:
+                problems.append(f"{h} expects {len(args)} arguments, got {len(e) - 1}")
+            for a, c in zip(args, e[1:]):
+                walk(c, _norm_sort(a))
+
+    lets: set = set()
+    vecs_seen: set = set()
+    if form[0] == "rewrite":
+        eqs = [("?cedar-rewrite-lhs", form[1]), ("?cedar-rewrite-lhs", form[2])]
+    else:
+        eqs = []
+        for p in form[1]:
+            if _premise_kind(p) == "guard":
+                q = _normalize_premise(p)
+                vecs_seen.add(q[2][1])
+                continue
+            q = _normalize_premise(p)
+            eqs.append((q[1], q[2]))
+        for act in form[2]:
+            if isinstance(act, list) and len(act) == 3 and act[0] == "let":
+                lets.add(act[1])
+                eqs.append((act[1], act[2]))
+            elif isinstance(act, list) and len(act) == 3 and act[0] == "union":
+                eqs.append((act[1], act[2]))
+    for _ in range(12):
+        before = {k: set(v) for k, v in sorts.items()}
+        problems.clear()
+        for lhs, rhs in eqs:
+            if isinstance(lhs, str):
+                note(lhs, result(rhs))
+                walk(rhs, one(lhs))
+            else:
+                r = result(rhs) or result(lhs)
+                walk(lhs, r)
+                walk(rhs, r)
+        if before == sorts:
+            break
+    for v in vecs_seen:
+        if not any(x.startswith("Vec ") for x in sorts.get(v, ())):
+            note(v, "Vec ?")
+    sorts.pop("?cedar-rewrite-lhs", None)
+    return sorts, sorted(set(problems))
+
+
 def _unguarded_operands(parsed, sigs: Dict[str, List[str]], rule_text: str) -> List[str]:
-    """Bit-vector variables whose width is not fixed by the *match pattern*.
+    """Data operands whose modeled width is not fixed by the *match pattern*.
 
     A proof at width ``w`` only covers matches whose operands all have the
-    widths the proof used. Widths must therefore be determined by the premises
-    alone; a width implied only by the right-hand side (for example by the
-    ``union`` with the matched node) does not constrain what egglog matches.
+    widths the proof used. Every ``Op``-sorted variable -- wherever it occurs:
+    premises, the right-hand side, literal ``vec-of``/``vec-push`` vectors,
+    attribute or type positions are classified by their declared sorts, never
+    by nesting -- must therefore get its width from the premises alone (or be
+    read with ``vec-get`` from a vector whose element width the premises fix),
+    and the proof model must use that same width. A width implied only by the
+    right-hand side (for example by the ``union`` with the matched node, or by
+    an operation applied to the operand) does not constrain what egglog
+    matches. Operand vectors with elements need a premise-fixed element width.
     """
     form = _rule_form(rule_text)
     if form is None:
         return ["<unparsed rule>"]
+    sorts, problems = operand_sorts(form, sigs)
+    if problems:
+        return problems
     if form[0] == "rewrite":
         prem_pairs = [("?lhs", form[1])]
         lhs_var = "?lhs"
     else:
-        prem_pairs = [(p[1], p[2]) for p in form[1]
-                      if isinstance(p, list) and len(p) == 3 and p[0] == "=" and isinstance(p[1], str)
-                      and p[1].startswith("?") and not zv._is_vec_shape(p[2])]
+        prem_pairs = [(p[1], p[2]) for p in (_normalize_premise(q) for q in form[1])
+                      if _is_var(p[1]) and not zv._is_vec_shape(p[2])]
         lhs_var = parsed.lhs_var
     prem_rule = zv.ParsedRule(name="premises", description="", leading_comment="", body_text="",
-                              premises=prem_pairs, lhs_var=lhs_var, rhs_expr=lhs_var, annotated_widths=[])
+                              premises=prem_pairs, lhs_var=lhs_var, rhs_expr=lhs_var, annotated_widths=[],
+                              vec_lengths=dict(getattr(parsed, "vec_lengths", {}) or {}))
     env = zv.infer_types(prem_rule)
     full_env = zv.infer_types(parsed)
-    let_names: set = set()
-    if form[0] == "rule" and len(form) > 2 and isinstance(form[2], list):
-        for act in form[2]:
-            if isinstance(act, list) and len(act) == 3 and act[0] == "let" and isinstance(act[1], str):
-                let_names.add(act[1] if act[1].startswith("?") else "?" + act[1])
-    all_syms: set = set()
-    for v, e in parsed.premises:
-        all_syms.add(v)
-        _syms(e, all_syms)
-    _syms(parsed.rhs_expr, all_syms)
-    non_bv: set = (set(env.vec_elem_width) | set(env.vec_max_index) | set(env.type_var_width)
-                   | set(full_env.vec_elem_width) | set(full_env.vec_max_index) | set(full_env.type_var_width))
-
-    def visit(e):
-        if isinstance(e, list) and e and isinstance(e[0], str):
-            kinds = sigs.get(e[0])
-            if kinds:
-                for i, kind in enumerate(kinds):
-                    if i + 1 < len(e) and kind in ("AttrPair", "AttrPairVec", "OpVec", "Type", "i64"):
-                        _syms(e[i + 1], non_bv)
-            if e[0] in ("vec-get", "vec-length", "vec-push", "vec-of"):
-                if len(e) > 1:
-                    _syms(e[1], non_bv)
-    for e in [x for _, x in parsed.premises] + [parsed.rhs_expr] + [x for _, x in prem_pairs]:
-        _walk(e, visit)
+    if env.conflicts or full_env.conflicts:
+        return [f"width conflict: {'; '.join((env.conflicts + full_env.conflicts)[:3])}"]
+    lets = {a[1] for a in (form[2] if form[0] == "rule" else []) if isinstance(a, list) and a and a[0] == "let"}
     bad = []
-    for sym in sorted(all_syms - non_bv - let_names):
-        if sym in env.widths or _bound_by_vec_get(sym, prem_rule, env):
+    for sym in sorted(sorts):
+        kinds = sorts[sym]
+        if sym in lets:
             continue
-        bad.append(sym)
+        if len(kinds) != 1:
+            bad.append(f"{sym} (sort {'/'.join(sorted(kinds))} is ambiguous)")
+            continue
+        kind = next(iter(kinds))
+        if kind == "Op":
+            w = env.widths.get(sym)
+            if w is None and _bound_by_vec_get(sym, prem_rule, env):
+                w = env.widths.get(sym, env.vec_elem_width.get(_vec_of(sym, prem_rule)))
+            if w is None:
+                bad.append(f"{sym} (operand width not fixed by the match)")
+            elif full_env.widths.get(sym, w) != w:
+                bad.append(f"{sym} (modeled at {full_env.widths[sym]} bits, matched at {w})")
+        elif kind == "Vec Op":
+            if env.vec_lengths.get(sym, 0) > 0:
+                ew = env.vec_elem_width.get(sym)
+                if ew is None:
+                    bad.append(f"{sym} (operand-vector element width not fixed by the match)")
+                elif full_env.vec_elem_width.get(sym, ew) != ew:
+                    bad.append(f"{sym} (elements modeled at {full_env.vec_elem_width[sym]} bits, matched at {ew})")
+    for sym in sorted(set(_all_vars(form)) - set(sorts)):
+        bad.append(f"{sym} (sort could not be determined)")
     return bad
+
+
+def _all_vars(form) -> List[str]:
+    out: set = set()
+    _syms(form, out)
+    return sorted(out)
+
+
+def _vec_of(sym: str, parsed) -> Optional[str]:
+    for v, e in parsed.premises:
+        if v == sym and isinstance(e, list) and e and e[0] == "vec-get" and isinstance(e[1], str):
+            return e[1]
+    return None
 
 
 def _unguarded_vectors(rule_text: str, sigs: Dict[str, List[str]]) -> List[str]:

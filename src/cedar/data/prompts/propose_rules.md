@@ -27,6 +27,10 @@ width it is applied to** before use; unprovable or unguarded rules are rejected.
 - Premises are `(= ?var term)` or a length guard only. To require two terms to be equal,
   bind both to one variable: `(= ?z (vec-get ?a 0)) (= ?z (vec-get ?b 0))`. Any other
   premise shape is rejected.
+- Every operand must get its width from the premises: bind it through an operation of the
+  rule's type (`(= ?x (comb_and ?a ?ops ?t))` fixes `?a`) or `vec-get` from such an operand
+  vector. Operands seen only through `comb_extract`, `comb_icmp`, `comb_concat`,
+  `comb_replicate` or the right-hand side have no fixed width and the rule is rejected.
 - Build new vectors with `(vec-push (vec-empty) ?x)`; never match vector constructors in premises.
 - No stateful ops (`seq_firreg`, `llhd_*`). No timing/latency changes.
 - Start each file with `;` comments stating the identity and why it is valid for all inputs.
